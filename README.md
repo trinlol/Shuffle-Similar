@@ -44,7 +44,7 @@ spicetify apply
 1. Right-click a track, album, playlist, or artist and choose **Play with Better Shuffle**
 2. Or click the **Better Shuffle** button (left of Spotify shuffle) in the playbar: first click enables, second reshuffles (hover shows refresh), third turns off
 3. While Better Shuffle is on, Spotify's built-in shuffle is greyed out and unclickable
-4. Open **Spicetify menu → Better Shuffle** to adjust settings
+4. Open **Profile menu (top right icon) → Better Shuffle** to adjust settings
 
 ## License
 
