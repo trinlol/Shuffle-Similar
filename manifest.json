@@ -1,0 +1,13 @@
+[
+  {
+    "name": "Better Shuffle",
+    "description": "Progressive shuffle: similar genre/era first, then your library and playlists",
+    "preview": "preview-icon.png",
+    "main": "better-shuffle.js",
+    "readme": "README.md",
+    "authors": [
+      { "name": "trinlol", "url": "https://github.com/trinlol" }
+    ],
+    "tags": ["shuffle", "queue", "playback"]
+  }
+]

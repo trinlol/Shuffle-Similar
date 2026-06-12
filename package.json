@@ -1,0 +1,20 @@
+{
+  "name": "better-shuffle",
+  "version": "1.0.0",
+  "description": "Progressive shuffle Spicetify extension",
+  "private": true,
+  "scripts": {
+    "build": "node esbuild.config.mjs",
+    "build-local": "node esbuild.config.mjs --local",
+    "build:release": "node esbuild.config.mjs --release",
+    "generate:preview": "node scripts/generate-preview.mjs",
+    "watch": "node esbuild.config.mjs --watch",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@resvg/resvg-js": "^2.6.2",
+    "@types/react": "^18.3.12",
+    "esbuild": "^0.24.0",
+    "typescript": "^5.6.3"
+  }
+}
