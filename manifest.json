@@ -1,0 +1,13 @@
+[
+  {
+    "name": "Shuffle Similar",
+    "description": "Play songs similar to your seed, with optional progressive blend into your library",
+    "preview": "preview-icon.png",
+    "main": "shuffle-similar.js",
+    "readme": "README.md",
+    "authors": [
+      { "name": "trinlol", "url": "https://github.com/trinlol" }
+    ],
+    "tags": ["shuffle", "queue", "playback"]
+  }
+]
