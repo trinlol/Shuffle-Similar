@@ -26,7 +26,7 @@ const buildOptions = {
   jsxFragment: "Spicetify.React.Fragment",
   logLevel: "info",
   banner: {
-    js: "// NAME: Shuffle Similar\n// DESCRIPTION: Play songs similar to your seed, with optional progressive blend into your library\n// VERSION: 1.0.0\n// AUTHORS: Shuffle Similar Contributors\n",
+    js: "// NAME: Shuffle Similar\n// DESCRIPTION: Play songs similar to your seed, with optional progressive blend into your library\n// VERSION: 1.4.0\n// AUTHORS: Shuffle Similar Contributors\n",
   },
 }
 

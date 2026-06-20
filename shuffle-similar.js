@@ -1,6 +1,6 @@
 // NAME: Shuffle Similar
 // DESCRIPTION: Play songs similar to your seed, with optional progressive blend into your library
-// VERSION: 1.0.0
+// VERSION: 1.4.0
 // AUTHORS: Shuffle Similar Contributors
 
 "use strict";
