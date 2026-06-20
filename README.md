@@ -1,7 +1,6 @@
 # Shuffle Similar
 
 Play songs similar to your selected song/playlist or artist (from radio, inspired-by, genre/era, and related-artist sources) with optional progressive blend into your liked songs and playlists.
-Want to hear songs similar to the one you're currently listening to?
 
 ![Spicetify Shuffle Similar](preview-banner.png)
 
