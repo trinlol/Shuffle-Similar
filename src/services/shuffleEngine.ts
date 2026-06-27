@@ -2,9 +2,9 @@ import { buildTrackBatch, getBlendWeights, buildSinglePoolBatch } from "../algor
 import { sessionManager } from "../session/SessionManager"
 import type { SeedMetadata, TrackCandidate } from "../session/types"
 import { fetchProfilePool, fetchAllPlaylistTracks, fetchTopTracks } from "../sources/profileTracks"
-import { fetchSimilarPool, fetchPlaylistRecommendations, fetchPlaylistSimilarPool } from "../sources/similarTracks"
+import { fetchSimilarPool, fetchPlaylistSimilarPool } from "../sources/similarTracks"
 import { fetchSeedMetadata } from "../sources/trackMetadata"
-import { loadSettings, loadPlayHistory } from "../storage/settings"
+import { getSmartConfig, loadPlayHistory } from "../storage/settings"
 import { detectForeignInjection, enableAutoplayGuard, syncKnownQueue } from "../queue/autoplayGuard"
 import {
   appendTracksToQueue,
@@ -32,7 +32,7 @@ type StartOptions = {
 }
 
 const ensurePools = async (seed: SeedMetadata, forceRefresh = false) => {
-  const settings = loadSettings()
+  const settings = getSmartConfig(seed)
   let similar = forceRefresh ? [] : sessionManager.getSimilarPool()
   let profile = forceRefresh ? [] : sessionManager.getProfilePool()
 
@@ -53,73 +53,30 @@ const buildPlaylistPlayableBatch = async () => {
     throw new Error("Playlist has no tracks.")
   }
 
-  const settings = loadSettings()
-  const mode = settings.playlistShuffleMode
+  const seed = sessionManager.getSeed()
+  const settings = getSmartConfig(seed)
   const playedUris = sessionManager.getPlayedUris()
   const queuedUris = sessionManager.getQueuedUris()
   const upcomingQueueUris = getUpcomingQueueUris()
   const excludeUris = [...new Set([...playedUris, ...queuedUris, ...upcomingQueueUris])]
 
-  let batch: TrackCandidate[] = []
+  // Smart Mode: blend playlist tracks (50% weight) with similar recommendations (50% weight)
+  const similarPool = await fetchPlaylistSimilarPool(playlistTracks, settings, 3)
 
-  if (mode === "strict") {
-    batch = buildSinglePoolBatch(
-      sessionManager.getSeed(),
-      playlistTracks,
-      excludeUris,
-      settings,
-      settings.initialQueueSize
-    )
-  } else if (mode === "similar") {
-    // Use the full multi-strategy approach: radio, inspired-by, genre/era,
-    // related artists, album peers — not just the deprecated /v1/recommendations
-    const similarPool = await fetchPlaylistSimilarPool(playlistTracks, settings, 3)
+  let batch = buildTrackBatch(
+    seed!,
+    sessionManager.getPosition(),
+    excludeUris,
+    similarPool,
+    playlistTracks,
+    settings,
+    settings.initialQueueSize
+  )
 
-    batch = buildSinglePoolBatch(
-      sessionManager.getSeed(),
-      similarPool,
-      excludeUris,
-      settings,
-      settings.initialQueueSize
-    )
-
-    // If the full strategy still came up short, try with more seeds
-    if (batch.length < settings.initialQueueSize / 2 && playlistTracks.length > 3) {
-      const extraPool = await fetchPlaylistSimilarPool(playlistTracks, settings, 5)
-      const extraExclude = [...excludeUris, ...batch.map((t) => t.uri)]
-      const extra = buildSinglePoolBatch(
-        sessionManager.getSeed(),
-        extraPool,
-        extraExclude,
-        settings,
-        settings.initialQueueSize - batch.length
-      )
-      batch.push(...extra)
-    }
-  } else {
-    // blend mode: mix playlist tracks with similar tracks
-    const similarPool = await fetchPlaylistSimilarPool(playlistTracks, settings, 3)
-
-    batch = buildTrackBatch(
-      sessionManager.getSeed()!,
-      sessionManager.getPosition(),
-      excludeUris,
-      similarPool,
-      playlistTracks,
-      settings,
-      settings.initialQueueSize
-    )
-  }
-
-  // Last-resort fallback: only use playlist tracks if nothing else worked,
-  // and warn the user that we couldn't find similar tracks
+  // Last-resort fallback: only use playlist tracks if nothing else worked
   if (batch.length === 0) {
-    if (mode === "similar") {
-      console.warn("[Shuffle Similar] No similar tracks found, falling back to playlist tracks")
-      Spicetify.showNotification("Could not find similar tracks — shuffling playlist instead", true)
-    }
     batch = buildSinglePoolBatch(
-      sessionManager.getSeed(),
+      seed,
       playlistTracks,
       excludeUris,
       settings,
@@ -128,7 +85,7 @@ const buildPlaylistPlayableBatch = async () => {
   }
 
   if (batch.length === 0) {
-    throw new Error("No suitable tracks found. Adjust your playlist or settings.")
+    throw new Error("No suitable tracks found.")
   }
 
   const playableQueueUris = await filterPlayableUris(batch.map((track) => track.uri))
@@ -143,48 +100,25 @@ const buildArtistPlayableBatch = async () => {
     throw new Error("Artist has no tracks.")
   }
 
-  const settings = loadSettings()
-  const mode = settings.artistShuffleMode
   const seed = sessionManager.getSeed()!
+  const settings = getSmartConfig(seed)
   const playedUris = sessionManager.getPlayedUris()
   const queuedUris = sessionManager.getQueuedUris()
   const upcomingQueueUris = getUpcomingQueueUris()
   const excludeUris = [...new Set([...playedUris, ...queuedUris, ...upcomingQueueUris])]
 
-  let batch: TrackCandidate[] = []
+  const similarTracks = await fetchSimilarPool(seed, settings)
 
-  if (mode === "strict") {
-    batch = buildSinglePoolBatch(
-      seed,
-      artistTracks,
-      excludeUris,
-      settings,
-      settings.initialQueueSize
-    )
-  } else {
-    const similarTracks = await fetchSimilarPool(seed, settings)
-
-    if (mode === "similar") {
-      batch = buildSinglePoolBatch(
-        seed,
-        similarTracks,
-        excludeUris,
-        settings,
-        settings.initialQueueSize
-      )
-    } else {
-      // blend
-      batch = buildTrackBatch(
-        seed,
-        sessionManager.getPosition(),
-        excludeUris,
-        similarTracks,
-        artistTracks,
-        settings,
-        settings.initialQueueSize
-      )
-    }
-  }
+  // Smart Mode: blend artist discography with similar recommendations
+  let batch = buildTrackBatch(
+    seed,
+    sessionManager.getPosition(),
+    excludeUris,
+    similarTracks,
+    artistTracks,
+    settings,
+    settings.initialQueueSize
+  )
 
   // Graceful fallback if batch is empty
   if (batch.length === 0) {
@@ -198,7 +132,7 @@ const buildArtistPlayableBatch = async () => {
   }
 
   if (batch.length === 0) {
-    throw new Error("No suitable tracks found. Adjust your settings.")
+    throw new Error("No suitable tracks found.")
   }
 
   const playableQueueUris = await filterPlayableUris(batch.map((track) => track.uri))
@@ -240,7 +174,7 @@ const buildPlayableBatch = async (seed: SeedMetadata, forceRefreshPools: boolean
   )
 
   if (batch.length === 0) {
-    throw new Error("No suitable tracks found. Try again or adjust settings.")
+    throw new Error("No suitable tracks found. Try again.")
   }
 
   const playableQueueUris = await filterPlayableUris(batch.map((track) => track.uri))
@@ -257,20 +191,14 @@ const buildPlayableBatch = async (seed: SeedMetadata, forceRefreshPools: boolean
 const formatSuccessMessage = (
   queueSize: number,
   position: number,
-  settings: ReturnType<typeof loadSettings>,
+  settings: ReturnType<typeof getSmartConfig>,
   similarCount: number
 ) => {
   if (sessionManager.isPlaylistSession()) {
-    const mode = settings.playlistShuffleMode
-    const desc =
-      mode === "strict" ? "playlist tracks" : mode === "blend" ? "playlist blend" : "similar to playlist"
-    return `Shuffle Similar: ${queueSize} queued · ${desc}`
+    return `Shuffle Similar: ${queueSize} queued · playlist blend`
   }
   if (sessionManager.isArtistSession()) {
-    const mode = settings.artistShuffleMode
-    const desc =
-      mode === "strict" ? "artist discography" : mode === "blend" ? "artist blend" : "similar to artist"
-    return `Shuffle Similar: ${queueSize} queued · ${desc}`
+    return `Shuffle Similar: ${queueSize} queued · artist blend`
   }
   const { similarWeight, profileWeight } = getBlendWeights(position, settings)
   const mode =
@@ -310,9 +238,6 @@ export const startShuffleSimilar = async (
   const currentUri = Spicetify.Player.data?.item?.uri
 
   if (options.replaceUpcoming && currentUri) {
-    // Toggle-enable path: keep the currently playing track untouched,
-    // only replace the upcoming queue.  Exclude both the current track
-    // and the seed (which is the current track) from the queue.
     const upcoming = playableQueueUris.filter(
       (uri) => uri !== currentUri && uri !== seed.uri
     )
@@ -320,15 +245,12 @@ export const startShuffleSimilar = async (
     syncKnownQueue(upcoming)
     await replaceUpcomingQueue(currentUri, upcoming)
   } else if (options.playSeed) {
-    // Context-menu path: always play the seed track first, then queue
-    // the rest.  Ensure the seed is never duplicated in the queue.
     const upcoming = playableQueueUris.filter((uri) => uri !== seed.uri)
     sessionManager.setQueuedUris(upcoming)
     syncKnownQueue(upcoming)
     const playbackContext = resolveShuffleSimilarPlaybackContext(contextUri, seed.albumUri)
     await playSeedAndQueue(seed.uri, upcoming, playbackContext)
   } else {
-    // Fallback: replace upcoming without touching playback
     const upcoming = playableQueueUris.filter(
       (uri) => uri !== currentUri && uri !== seed.uri
     )
@@ -368,7 +290,6 @@ export const reshuffleFromCurrentTrack = async () => {
   })
 }
 
-
 export const reshuffleOnToggleOff = async () => {
   const shuffled = await shuffleUpcomingInPlace()
   if (!shuffled) return
@@ -378,12 +299,12 @@ export const reshuffleOnToggleOff = async () => {
 export const refillQueueIfNeeded = async () => {
   if (!sessionManager.isActive() || sessionManager.isRefilling()) return
 
-  const settings = loadSettings()
-  const upcoming = getUpcomingCount()
-  if (upcoming >= settings.refillThreshold) return
-
   const seed = sessionManager.getSeed()
   if (!seed) return
+
+  const settings = getSmartConfig(seed)
+  const upcoming = getUpcomingCount()
+  if (upcoming >= settings.refillThreshold) return
 
   sessionManager.setRefilling(true)
   try {

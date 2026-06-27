@@ -1,5 +1,5 @@
 import type { SeedMetadata, TrackCandidate } from "./types"
-import { appendPlayHistory, loadSettings } from "../storage/settings"
+import { appendPlayHistory, getSmartConfig } from "../storage/settings"
 
 type SessionState = {
   active: boolean
@@ -139,8 +139,8 @@ export const sessionManager = {
     }
     state.position += 1
     state.queuedUris = state.queuedUris.filter((queuedUri) => queuedUri !== uri)
-    const settings = loadSettings()
-    appendPlayHistory(uri, settings.historyPenaltyWindow)
+    const config = getSmartConfig(state.seed)
+    appendPlayHistory(uri, config.historyPenaltyWindow)
   },
 
   setQueuedUris: (uris: string[]) => {

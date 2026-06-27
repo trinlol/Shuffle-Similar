@@ -1,50 +1,55 @@
 // NAME: Shuffle Similar
 // DESCRIPTION: Play songs similar to your seed, with optional progressive blend into your library
-// VERSION: 1.6.0
+// VERSION: 1.7.0
 // AUTHORS: Shuffle Similar Contributors
 
 "use strict";
 (() => {
   // src/storage/settings.ts
-  var STORAGE_KEY = "shuffleSimilar:settings";
-  var LEGACY_SIMILAR_SHUFFLE_STORAGE_KEY = "similarShuffle:settings";
-  var LEGACY_BETTER_SHUFFLE_STORAGE_KEY = "betterShuffle:settings";
   var HISTORY_KEY = "shuffleSimilar:playHistory";
   var LEGACY_SIMILAR_SHUFFLE_HISTORY_KEY = "similarShuffle:playHistory";
   var LEGACY_BETTER_SHUFFLE_HISTORY_KEY = "betterShuffle:playHistory";
-  var DEFAULT_BLEND_PHASES = [
-    { maxPosition: 4, similarWeight: 1, profileWeight: 0 },
-    { maxPosition: 9, similarWeight: 0.7, profileWeight: 0.3 },
-    { maxPosition: 19, similarWeight: 0.4, profileWeight: 0.6 },
-    { maxPosition: Number.POSITIVE_INFINITY, similarWeight: 0.2, profileWeight: 0.8 }
-  ];
-  var DEFAULT_SETTINGS = {
-    eraWindow: 3,
-    artistSpacing: 3,
-    refillThreshold: 3,
-    initialQueueSize: 25,
-    excludeSeedArtistEarly: true,
-    historyPenaltyWindow: 200,
-    deprioritizePopular: true,
-    matchTempo: true,
-    matchEnergy: true,
-    matchValence: true,
-    blendPhases: DEFAULT_BLEND_PHASES,
-    songBlendMode: "progressive",
-    playlistShuffleMode: "similar",
-    artistShuffleMode: "strict"
+  var LEGACY_BETTER_SHUFFLE_STORAGE_KEY = "betterShuffle:settings";
+  var LEGACY_SIMILAR_SHUFFLE_STORAGE_KEY = "similarShuffle:settings";
+  var STORAGE_KEY = "shuffleSimilar:settings";
+  var getSmartConfig = (seed) => {
+    const releaseYear = seed?.releaseYear;
+    const popularity = seed?.popularity;
+    let eraWindow = 3;
+    if (releaseYear) {
+      if (releaseYear < 1980) eraWindow = 8;
+      else if (releaseYear < 2e3) eraWindow = 5;
+      else eraWindow = 3;
+    }
+    const deprioritizePopular = popularity == null || popularity < 75;
+    return {
+      eraWindow,
+      artistSpacing: 3,
+      refillThreshold: 3,
+      initialQueueSize: 25,
+      excludeSeedArtistEarly: true,
+      historyPenaltyWindow: 200,
+      deprioritizePopular,
+      matchTempo: true,
+      matchEnergy: true,
+      matchValence: true,
+      blendPhases: [
+        { maxPosition: 4, similarWeight: 1, profileWeight: 0 },
+        { maxPosition: 9, similarWeight: 0.7, profileWeight: 0.3 },
+        { maxPosition: 19, similarWeight: 0.4, profileWeight: 0.6 },
+        { maxPosition: Number.POSITIVE_INFINITY, similarWeight: 0.2, profileWeight: 0.8 }
+      ]
+    };
   };
   var migrateLegacyStorage = () => {
     const legacyKeys = [
       LEGACY_SIMILAR_SHUFFLE_STORAGE_KEY,
-      LEGACY_BETTER_SHUFFLE_STORAGE_KEY
+      LEGACY_BETTER_SHUFFLE_STORAGE_KEY,
+      STORAGE_KEY
     ];
-    for (const legacyKey of legacyKeys) {
-      const legacySettings = Spicetify.LocalStorage.get(legacyKey);
-      if (legacySettings && !Spicetify.LocalStorage.get(STORAGE_KEY)) {
-        Spicetify.LocalStorage.set(STORAGE_KEY, legacySettings);
-        Spicetify.LocalStorage.remove(legacyKey);
-        break;
+    for (const key of legacyKeys) {
+      if (Spicetify.LocalStorage.get(key)) {
+        Spicetify.LocalStorage.remove(key);
       }
     }
     const legacyHistoryKeys = [
@@ -59,24 +64,6 @@
         break;
       }
     }
-  };
-  var loadSettings = () => {
-    migrateLegacyStorage();
-    try {
-      const raw = Spicetify.LocalStorage.get(STORAGE_KEY);
-      if (!raw) return { ...DEFAULT_SETTINGS, blendPhases: [...DEFAULT_BLEND_PHASES] };
-      const parsed = JSON.parse(raw);
-      return {
-        ...DEFAULT_SETTINGS,
-        ...parsed,
-        blendPhases: parsed.blendPhases ?? [...DEFAULT_BLEND_PHASES]
-      };
-    } catch {
-      return { ...DEFAULT_SETTINGS, blendPhases: [...DEFAULT_BLEND_PHASES] };
-    }
-  };
-  var saveSettings = (settings) => {
-    Spicetify.LocalStorage.set(STORAGE_KEY, JSON.stringify(settings));
   };
   var loadPlayHistory = () => {
     migrateLegacyStorage();
@@ -229,15 +216,6 @@
 
   // src/algorithm/progressiveBlend.ts
   var getBlendWeights = (position, settings) => {
-    if (settings.songBlendMode === "balanced") {
-      return { similarWeight: 0.5, profileWeight: 0.5 };
-    }
-    if (settings.songBlendMode === "similar") {
-      return { similarWeight: 1, profileWeight: 0 };
-    }
-    if (settings.songBlendMode === "library") {
-      return { similarWeight: 0, profileWeight: 1 };
-    }
     const phases = settings.blendPhases;
     const phase = phases.find((entry) => position <= entry.maxPosition) ?? phases[phases.length - 1];
     return {
@@ -454,8 +432,8 @@
       }
       state.position += 1;
       state.queuedUris = state.queuedUris.filter((queuedUri) => queuedUri !== uri);
-      const settings = loadSettings();
-      appendPlayHistory(uri, settings.historyPenaltyWindow);
+      const config = getSmartConfig(state.seed);
+      appendPlayHistory(uri, config.historyPenaltyWindow);
     },
     setQueuedUris: (uris) => {
       state.queuedUris = uris.filter((uri) => uri !== "spotify:delimiter");
@@ -1789,7 +1767,7 @@
 
   // src/services/shuffleEngine.ts
   var ensurePools = async (seed, forceRefresh = false) => {
-    const settings = loadSettings();
+    const settings = getSmartConfig(seed);
     let similar = forceRefresh ? [] : sessionManager.getSimilarPool();
     let profile = forceRefresh ? [] : sessionManager.getProfilePool();
     if (similar.length === 0) {
@@ -1806,61 +1784,25 @@
     if (playlistTracks.length === 0) {
       throw new Error("Playlist has no tracks.");
     }
-    const settings = loadSettings();
-    const mode = settings.playlistShuffleMode;
+    const seed = sessionManager.getSeed();
+    const settings = getSmartConfig(seed);
     const playedUris = sessionManager.getPlayedUris();
     const queuedUris = sessionManager.getQueuedUris();
     const upcomingQueueUris = getUpcomingQueueUris();
     const excludeUris = [.../* @__PURE__ */ new Set([...playedUris, ...queuedUris, ...upcomingQueueUris])];
-    let batch = [];
-    if (mode === "strict") {
-      batch = buildSinglePoolBatch(
-        sessionManager.getSeed(),
-        playlistTracks,
-        excludeUris,
-        settings,
-        settings.initialQueueSize
-      );
-    } else if (mode === "similar") {
-      const similarPool = await fetchPlaylistSimilarPool(playlistTracks, settings, 3);
-      batch = buildSinglePoolBatch(
-        sessionManager.getSeed(),
-        similarPool,
-        excludeUris,
-        settings,
-        settings.initialQueueSize
-      );
-      if (batch.length < settings.initialQueueSize / 2 && playlistTracks.length > 3) {
-        const extraPool = await fetchPlaylistSimilarPool(playlistTracks, settings, 5);
-        const extraExclude = [...excludeUris, ...batch.map((t) => t.uri)];
-        const extra = buildSinglePoolBatch(
-          sessionManager.getSeed(),
-          extraPool,
-          extraExclude,
-          settings,
-          settings.initialQueueSize - batch.length
-        );
-        batch.push(...extra);
-      }
-    } else {
-      const similarPool = await fetchPlaylistSimilarPool(playlistTracks, settings, 3);
-      batch = buildTrackBatch(
-        sessionManager.getSeed(),
-        sessionManager.getPosition(),
-        excludeUris,
-        similarPool,
-        playlistTracks,
-        settings,
-        settings.initialQueueSize
-      );
-    }
+    const similarPool = await fetchPlaylistSimilarPool(playlistTracks, settings, 3);
+    let batch = buildTrackBatch(
+      seed,
+      sessionManager.getPosition(),
+      excludeUris,
+      similarPool,
+      playlistTracks,
+      settings,
+      settings.initialQueueSize
+    );
     if (batch.length === 0) {
-      if (mode === "similar") {
-        console.warn("[Shuffle Similar] No similar tracks found, falling back to playlist tracks");
-        Spicetify.showNotification("Could not find similar tracks \u2014 shuffling playlist instead", true);
-      }
       batch = buildSinglePoolBatch(
-        sessionManager.getSeed(),
+        seed,
         playlistTracks,
         excludeUris,
         settings,
@@ -1868,7 +1810,7 @@
       );
     }
     if (batch.length === 0) {
-      throw new Error("No suitable tracks found. Adjust your playlist or settings.");
+      throw new Error("No suitable tracks found.");
     }
     const playableQueueUris = await filterPlayableUris(batch.map((track) => track.uri));
     const queueUris = playableQueueUris.length > 0 ? playableQueueUris : batch.map((track) => track.uri);
@@ -1879,44 +1821,22 @@
     if (artistTracks.length === 0) {
       throw new Error("Artist has no tracks.");
     }
-    const settings = loadSettings();
-    const mode = settings.artistShuffleMode;
     const seed = sessionManager.getSeed();
+    const settings = getSmartConfig(seed);
     const playedUris = sessionManager.getPlayedUris();
     const queuedUris = sessionManager.getQueuedUris();
     const upcomingQueueUris = getUpcomingQueueUris();
     const excludeUris = [.../* @__PURE__ */ new Set([...playedUris, ...queuedUris, ...upcomingQueueUris])];
-    let batch = [];
-    if (mode === "strict") {
-      batch = buildSinglePoolBatch(
-        seed,
-        artistTracks,
-        excludeUris,
-        settings,
-        settings.initialQueueSize
-      );
-    } else {
-      const similarTracks = await fetchSimilarPool(seed, settings);
-      if (mode === "similar") {
-        batch = buildSinglePoolBatch(
-          seed,
-          similarTracks,
-          excludeUris,
-          settings,
-          settings.initialQueueSize
-        );
-      } else {
-        batch = buildTrackBatch(
-          seed,
-          sessionManager.getPosition(),
-          excludeUris,
-          similarTracks,
-          artistTracks,
-          settings,
-          settings.initialQueueSize
-        );
-      }
-    }
+    const similarTracks = await fetchSimilarPool(seed, settings);
+    let batch = buildTrackBatch(
+      seed,
+      sessionManager.getPosition(),
+      excludeUris,
+      similarTracks,
+      artistTracks,
+      settings,
+      settings.initialQueueSize
+    );
     if (batch.length === 0) {
       batch = buildSinglePoolBatch(
         seed,
@@ -1927,7 +1847,7 @@
       );
     }
     if (batch.length === 0) {
-      throw new Error("No suitable tracks found. Adjust your settings.");
+      throw new Error("No suitable tracks found.");
     }
     const playableQueueUris = await filterPlayableUris(batch.map((track) => track.uri));
     const queueUris = playableQueueUris.length > 0 ? playableQueueUris : batch.map((track) => track.uri);
@@ -1961,7 +1881,7 @@
       settings.initialQueueSize
     );
     if (batch.length === 0) {
-      throw new Error("No suitable tracks found. Try again or adjust settings.");
+      throw new Error("No suitable tracks found. Try again.");
     }
     const playableQueueUris = await filterPlayableUris(batch.map((track) => track.uri));
     const queueUris = playableQueueUris.length > 0 ? playableQueueUris : batch.map((track) => track.uri);
@@ -1972,14 +1892,10 @@
   };
   var formatSuccessMessage = (queueSize, position, settings, similarCount) => {
     if (sessionManager.isPlaylistSession()) {
-      const mode2 = settings.playlistShuffleMode;
-      const desc = mode2 === "strict" ? "playlist tracks" : mode2 === "blend" ? "playlist blend" : "similar to playlist";
-      return `Shuffle Similar: ${queueSize} queued \xB7 ${desc}`;
+      return `Shuffle Similar: ${queueSize} queued \xB7 playlist blend`;
     }
     if (sessionManager.isArtistSession()) {
-      const mode2 = settings.artistShuffleMode;
-      const desc = mode2 === "strict" ? "artist discography" : mode2 === "blend" ? "artist blend" : "similar to artist";
-      return `Shuffle Similar: ${queueSize} queued \xB7 ${desc}`;
+      return `Shuffle Similar: ${queueSize} queued \xB7 artist blend`;
     }
     const { similarWeight, profileWeight } = getBlendWeights(position, settings);
     const mode = similarWeight >= profileWeight ? `similar (${similarCount} sources)` : "your library";
@@ -2060,11 +1976,11 @@
   };
   var refillQueueIfNeeded = async () => {
     if (!sessionManager.isActive() || sessionManager.isRefilling()) return;
-    const settings = loadSettings();
-    const upcoming = getUpcomingCount();
-    if (upcoming >= settings.refillThreshold) return;
     const seed = sessionManager.getSeed();
     if (!seed) return;
+    const settings = getSmartConfig(seed);
+    const upcoming = getUpcomingCount();
+    if (upcoming >= settings.refillThreshold) return;
     sessionManager.setRefilling(true);
     try {
       const foreign = detectForeignInjection();
@@ -2193,319 +2109,6 @@
     ).register();
     contextMenuRegistered = true;
     console.info("[Shuffle Similar] Context menus registered");
-  };
-
-  // src/ui/settingsPage.tsx
-  var SETTINGS_STYLE_ID = "shuffle-similar-settings-styles";
-  var settingsStyles = `
-.shuffle-similar-settings-root .popup-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 10px 0;
-}
-.shuffle-similar-settings-root .popup-row label {
-  color: var(--spice-text);
-  flex: 1;
-}
-.shuffle-similar-settings-root .popup-row input[type="number"] {
-  width: 72px;
-  color: var(--spice-text);
-  background: rgba(var(--spice-rgb-shadow), 0.7);
-  border: 0;
-  border-radius: 4px;
-  padding: 6px 8px;
-}
-.shuffle-similar-settings-root .popup-row input[type="checkbox"] {
-  width: 18px;
-  height: 18px;
-}
-.shuffle-similar-settings-root .popup-title {
-  color: var(--spice-text);
-  margin: 0 0 8px;
-}
-.shuffle-similar-settings-root .popup-help {
-  color: rgba(var(--spice-rgb-text), 0.7);
-  font-size: 12px;
-  margin: 0 0 16px;
-}
-.shuffle-similar-settings-root .popup-reset {
-  margin-top: 12px;
-  color: var(--spice-text);
-  background: rgba(var(--spice-rgb-shadow), 0.7);
-  border: 0;
-  border-radius: 999px;
-  padding: 8px 14px;
-  cursor: pointer;
-}
-`;
-  var injectSettingsStyles = () => {
-    if (document.getElementById(SETTINGS_STYLE_ID)) return;
-    const style = document.createElement("style");
-    style.id = SETTINGS_STYLE_ID;
-    style.textContent = settingsStyles;
-    document.head.appendChild(style);
-  };
-  var fieldId = (label) => `shuffle-similar-${label.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
-  var createNumberField = (label, value, min, max, onChange) => {
-    const row = document.createElement("div");
-    row.className = "popup-row";
-    const id = fieldId(label);
-    const labelEl = document.createElement("label");
-    labelEl.htmlFor = id;
-    labelEl.textContent = label;
-    const input = document.createElement("input");
-    input.id = id;
-    input.type = "number";
-    input.min = String(min);
-    input.max = String(max);
-    input.value = String(value);
-    input.setAttribute("aria-label", label);
-    input.addEventListener("change", () => {
-      const parsed = Number(input.value);
-      if (!Number.isFinite(parsed)) return;
-      onChange(Math.min(max, Math.max(min, parsed)));
-    });
-    row.append(labelEl, input);
-    return { row, input };
-  };
-  var createCheckboxField = (label, checked, onChange) => {
-    const row = document.createElement("div");
-    row.className = "popup-row";
-    const id = fieldId(label);
-    const labelEl = document.createElement("label");
-    labelEl.htmlFor = id;
-    labelEl.textContent = label;
-    const input = document.createElement("input");
-    input.id = id;
-    input.type = "checkbox";
-    input.checked = checked;
-    input.setAttribute("aria-label", label);
-    input.addEventListener("change", () => onChange(input.checked));
-    row.append(labelEl, input);
-    return { row, input };
-  };
-  var createSelectField = (label, value, options, onChange) => {
-    const row = document.createElement("div");
-    row.className = "popup-row";
-    const id = fieldId(label);
-    const labelEl = document.createElement("label");
-    labelEl.htmlFor = id;
-    labelEl.textContent = label;
-    const select = document.createElement("select");
-    select.id = id;
-    select.style.color = "var(--spice-text)";
-    select.style.background = "rgba(var(--spice-rgb-shadow), 0.7)";
-    select.style.border = "0";
-    select.style.borderRadius = "4px";
-    select.style.padding = "6px 8px";
-    for (const opt of options) {
-      const optionEl = document.createElement("option");
-      optionEl.value = opt.value;
-      optionEl.textContent = opt.label;
-      optionEl.selected = opt.value === value;
-      select.appendChild(optionEl);
-    }
-    select.addEventListener("change", () => onChange(select.value));
-    row.append(labelEl, select);
-    return { row, select };
-  };
-  var buildSettingsDom = () => {
-    injectSettingsStyles();
-    let settings = loadSettings();
-    const root = document.createElement("div");
-    root.className = "shuffle-similar-settings-root";
-    const title = document.createElement("h3");
-    title.className = "popup-title";
-    title.textContent = "Shuffle Similar Settings";
-    const help = document.createElement("p");
-    help.className = "popup-help";
-    help.textContent = "Starts with genre/era-similar tracks, then gradually blends in your library and playlists.";
-    const inputs = {};
-    const applyToInputs = (next) => {
-      settings = next;
-      inputs.eraWindow.value = String(next.eraWindow);
-      inputs.artistSpacing.value = String(next.artistSpacing);
-      inputs.refillThreshold.value = String(next.refillThreshold);
-      inputs.initialQueueSize.value = String(next.initialQueueSize);
-      inputs.historyPenaltyWindow.value = String(next.historyPenaltyWindow);
-      inputs.deprioritizePopular.checked = next.deprioritizePopular;
-      inputs.excludeSeedArtistEarly.checked = next.excludeSeedArtistEarly;
-      inputs.matchTempo.checked = next.matchTempo;
-      inputs.matchEnergy.checked = next.matchEnergy;
-      inputs.matchValence.checked = next.matchValence;
-      inputs.songBlendMode.value = next.songBlendMode;
-      inputs.playlistShuffleMode.value = next.playlistShuffleMode;
-      inputs.artistShuffleMode.value = next.artistShuffleMode;
-    };
-    const persist = (patch) => {
-      const next = { ...settings, ...patch };
-      saveSettings(next);
-      applyToInputs(next);
-    };
-    const songBlendField = createSelectField(
-      "Song blend mode",
-      settings.songBlendMode,
-      [
-        { value: "progressive", label: "Progressive (similar first, library later)" },
-        { value: "balanced", label: "Balanced (50/50 mix)" },
-        { value: "similar", label: "Recommendations Only" },
-        { value: "library", label: "Library Only (matching seed style)" }
-      ],
-      (songBlendMode) => persist({ songBlendMode })
-    );
-    inputs.songBlendMode = songBlendField.select;
-    const playlistShuffleField = createSelectField(
-      "Playlist shuffle mode",
-      settings.playlistShuffleMode,
-      [
-        { value: "strict", label: "Strict (Playlist Tracks Only)" },
-        { value: "blend", label: "Blend (Playlist + Recommendations)" },
-        { value: "similar", label: "Recommendations Only" }
-      ],
-      (playlistShuffleMode) => persist({ playlistShuffleMode })
-    );
-    inputs.playlistShuffleMode = playlistShuffleField.select;
-    const artistShuffleField = createSelectField(
-      "Artist shuffle mode",
-      settings.artistShuffleMode,
-      [
-        { value: "strict", label: "Strict (Artist Tracks Only)" },
-        { value: "blend", label: "Blend (Artist + Similar)" },
-        { value: "similar", label: "Recommendations Only" }
-      ],
-      (artistShuffleMode) => persist({ artistShuffleMode })
-    );
-    inputs.artistShuffleMode = artistShuffleField.select;
-    const eraField = createNumberField(
-      "Era window (\xB1 years)",
-      settings.eraWindow,
-      1,
-      10,
-      (eraWindow) => persist({ eraWindow })
-    );
-    inputs.eraWindow = eraField.input;
-    const artistField = createNumberField(
-      "Artist spacing",
-      settings.artistSpacing,
-      1,
-      8,
-      (artistSpacing) => persist({ artistSpacing })
-    );
-    inputs.artistSpacing = artistField.input;
-    const refillField = createNumberField(
-      "Refill when queue has \u2264",
-      settings.refillThreshold,
-      1,
-      10,
-      (refillThreshold) => persist({ refillThreshold })
-    );
-    inputs.refillThreshold = refillField.input;
-    const batchField = createNumberField(
-      "Tracks per batch",
-      settings.initialQueueSize,
-      10,
-      50,
-      (initialQueueSize) => persist({ initialQueueSize })
-    );
-    inputs.initialQueueSize = batchField.input;
-    const historyField = createNumberField(
-      "History penalty window",
-      settings.historyPenaltyWindow,
-      50,
-      500,
-      (historyPenaltyWindow) => persist({ historyPenaltyWindow })
-    );
-    inputs.historyPenaltyWindow = historyField.input;
-    const popularField = createCheckboxField(
-      "Prefer less-played library tracks",
-      settings.deprioritizePopular,
-      (deprioritizePopular) => persist({ deprioritizePopular })
-    );
-    inputs.deprioritizePopular = popularField.input;
-    const excludeField = createCheckboxField(
-      "Exclude seed artist early",
-      settings.excludeSeedArtistEarly,
-      (excludeSeedArtistEarly) => persist({ excludeSeedArtistEarly })
-    );
-    inputs.excludeSeedArtistEarly = excludeField.input;
-    const tempoField = createCheckboxField(
-      "Match seed tempo (BPM)",
-      settings.matchTempo,
-      (matchTempo) => persist({ matchTempo })
-    );
-    inputs.matchTempo = tempoField.input;
-    const energyField = createCheckboxField(
-      "Match seed energy",
-      settings.matchEnergy,
-      (matchEnergy) => persist({ matchEnergy })
-    );
-    inputs.matchEnergy = energyField.input;
-    const valenceField = createCheckboxField(
-      "Match seed mood (valence)",
-      settings.matchValence,
-      (matchValence) => persist({ matchValence })
-    );
-    inputs.matchValence = valenceField.input;
-    const resetButton = document.createElement("button");
-    resetButton.type = "button";
-    resetButton.className = "popup-reset";
-    resetButton.textContent = "Reset defaults";
-    resetButton.addEventListener("click", () => {
-      persist({
-        ...DEFAULT_SETTINGS,
-        blendPhases: [...DEFAULT_SETTINGS.blendPhases]
-      });
-    });
-    root.append(
-      title,
-      help,
-      songBlendField.row,
-      playlistShuffleField.row,
-      artistShuffleField.row,
-      eraField.row,
-      artistField.row,
-      refillField.row,
-      batchField.row,
-      historyField.row,
-      popularField.row,
-      excludeField.row,
-      tempoField.row,
-      energyField.row,
-      valenceField.row,
-      resetButton
-    );
-    return root;
-  };
-  var openSettingsPage = () => {
-    try {
-      Spicetify.PopupModal.hide();
-    } catch {
-    }
-    setTimeout(() => {
-      Spicetify.PopupModal.display({
-        title: "Shuffle Similar",
-        content: buildSettingsDom(),
-        isLarge: true
-      });
-    }, 100);
-  };
-  var settingsMenuRegistered = false;
-  var registerSettingsMenu = () => {
-    if (settingsMenuRegistered) return;
-    if (!Spicetify.Menu?.Item || !Spicetify.Menu?.SubMenu) {
-      throw new Error("Spicetify.Menu is not available");
-    }
-    const settingsItem = new Spicetify.Menu.Item(
-      "Settings",
-      false,
-      () => openSettingsPage(),
-      "edit"
-    );
-    new Spicetify.Menu.SubMenu("Shuffle Similar", [settingsItem]).register();
-    settingsMenuRegistered = true;
-    console.info("[Shuffle Similar] Profile menu registered");
   };
 
   // src/ui/icons.ts
@@ -2929,20 +2532,11 @@
         console.error("[Shuffle Similar] Context menu registration failed", error);
       }
     };
-    const tryRegisterSettingsMenu = () => {
-      try {
-        registerSettingsMenu();
-      } catch (error) {
-        console.error("[Shuffle Similar] Settings menu registration failed", error);
-      }
-    };
     const initializeExtension = () => {
       if (initialized) return;
       initialized = true;
       tryRegisterContextMenu();
-      tryRegisterSettingsMenu();
       setTimeout(tryRegisterContextMenu, 2e3);
-      setTimeout(tryRegisterSettingsMenu, 2e3);
       Spicetify.Player.addEventListener("songchange", () => {
         if (sessionManager.isToggleEnabled()) {
           enforceNativeShuffleOff();
@@ -2967,7 +2561,6 @@
     spicetifyEvents?.platformLoaded?.addListener?.(waitForSpicetify);
     spicetifyEvents?.webpackLoaded?.addListener?.(() => {
       tryRegisterContextMenu();
-      tryRegisterSettingsMenu();
     });
     waitForSpicetify();
   }

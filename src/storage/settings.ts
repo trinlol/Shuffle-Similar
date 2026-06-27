@@ -1,6 +1,6 @@
 import type { BlendPhase } from "../session/types"
 
-export type ShuffleSimilarSettings = {
+export type SmartConfig = {
   eraWindow: number
   artistSpacing: number
   refillThreshold: number
@@ -12,53 +12,60 @@ export type ShuffleSimilarSettings = {
   matchEnergy: boolean
   matchValence: boolean
   blendPhases: BlendPhase[]
-  songBlendMode: "progressive" | "balanced" | "similar" | "library"
-  playlistShuffleMode: "strict" | "blend" | "similar"
-  artistShuffleMode: "strict" | "blend" | "similar"
 }
 
-const STORAGE_KEY = "shuffleSimilar:settings"
-const LEGACY_SIMILAR_SHUFFLE_STORAGE_KEY = "similarShuffle:settings"
-const LEGACY_BETTER_SHUFFLE_STORAGE_KEY = "betterShuffle:settings"
 const HISTORY_KEY = "shuffleSimilar:playHistory"
 const LEGACY_SIMILAR_SHUFFLE_HISTORY_KEY = "similarShuffle:playHistory"
 const LEGACY_BETTER_SHUFFLE_HISTORY_KEY = "betterShuffle:playHistory"
+const LEGACY_BETTER_SHUFFLE_STORAGE_KEY = "betterShuffle:settings"
+const LEGACY_SIMILAR_SHUFFLE_STORAGE_KEY = "similarShuffle:settings"
+const STORAGE_KEY = "shuffleSimilar:settings"
 
-export const DEFAULT_BLEND_PHASES: BlendPhase[] = [
-  { maxPosition: 4, similarWeight: 1, profileWeight: 0 },
-  { maxPosition: 9, similarWeight: 0.7, profileWeight: 0.3 },
-  { maxPosition: 19, similarWeight: 0.4, profileWeight: 0.6 },
-  { maxPosition: Number.POSITIVE_INFINITY, similarWeight: 0.2, profileWeight: 0.8 },
-]
+export const getSmartConfig = (seed?: { releaseYear?: number; popularity?: number } | null): SmartConfig => {
+  const releaseYear = seed?.releaseYear
+  const popularity = seed?.popularity
 
-export const DEFAULT_SETTINGS: ShuffleSimilarSettings = {
-  eraWindow: 3,
-  artistSpacing: 3,
-  refillThreshold: 3,
-  initialQueueSize: 25,
-  excludeSeedArtistEarly: true,
-  historyPenaltyWindow: 200,
-  deprioritizePopular: true,
-  matchTempo: true,
-  matchEnergy: true,
-  matchValence: true,
-  blendPhases: DEFAULT_BLEND_PHASES,
-  songBlendMode: "progressive",
-  playlistShuffleMode: "similar",
-  artistShuffleMode: "strict",
+  // Dynamic Era Window: older music eras were broader, modern ones are tighter
+  let eraWindow = 3
+  if (releaseYear) {
+    if (releaseYear < 1980) eraWindow = 8
+    else if (releaseYear < 2000) eraWindow = 5
+    else eraWindow = 3
+  }
+
+  // Dynamic Popularity Tuning: match the obscurity level of the seed track
+  const deprioritizePopular = popularity == null || popularity < 75
+
+  return {
+    eraWindow,
+    artistSpacing: 3,
+    refillThreshold: 3,
+    initialQueueSize: 25,
+    excludeSeedArtistEarly: true,
+    historyPenaltyWindow: 200,
+    deprioritizePopular,
+    matchTempo: true,
+    matchEnergy: true,
+    matchValence: true,
+    blendPhases: [
+      { maxPosition: 4, similarWeight: 1, profileWeight: 0 },
+      { maxPosition: 9, similarWeight: 0.7, profileWeight: 0.3 },
+      { maxPosition: 19, similarWeight: 0.4, profileWeight: 0.6 },
+      { maxPosition: Number.POSITIVE_INFINITY, similarWeight: 0.2, profileWeight: 0.8 },
+    ]
+  }
 }
 
 const migrateLegacyStorage = (): void => {
+  // Clean up legacy setting storage keys to keep localStorage clean
   const legacyKeys = [
-  LEGACY_SIMILAR_SHUFFLE_STORAGE_KEY,
-  LEGACY_BETTER_SHUFFLE_STORAGE_KEY,
+    LEGACY_SIMILAR_SHUFFLE_STORAGE_KEY,
+    LEGACY_BETTER_SHUFFLE_STORAGE_KEY,
+    STORAGE_KEY,
   ]
-  for (const legacyKey of legacyKeys) {
-    const legacySettings = Spicetify.LocalStorage.get(legacyKey)
-    if (legacySettings && !Spicetify.LocalStorage.get(STORAGE_KEY)) {
-      Spicetify.LocalStorage.set(STORAGE_KEY, legacySettings)
-      Spicetify.LocalStorage.remove(legacyKey)
-      break
+  for (const key of legacyKeys) {
+    if (Spicetify.LocalStorage.get(key)) {
+      Spicetify.LocalStorage.remove(key)
     }
   }
 
@@ -74,27 +81,6 @@ const migrateLegacyStorage = (): void => {
       break
     }
   }
-}
-
-export const loadSettings = (): ShuffleSimilarSettings => {
-  migrateLegacyStorage()
-
-  try {
-    const raw = Spicetify.LocalStorage.get(STORAGE_KEY)
-    if (!raw) return { ...DEFAULT_SETTINGS, blendPhases: [...DEFAULT_BLEND_PHASES] }
-    const parsed = JSON.parse(raw) as Partial<ShuffleSimilarSettings>
-    return {
-      ...DEFAULT_SETTINGS,
-      ...parsed,
-      blendPhases: parsed.blendPhases ?? [...DEFAULT_BLEND_PHASES],
-    }
-  } catch {
-    return { ...DEFAULT_SETTINGS, blendPhases: [...DEFAULT_BLEND_PHASES] }
-  }
-}
-
-export const saveSettings = (settings: ShuffleSimilarSettings): void => {
-  Spicetify.LocalStorage.set(STORAGE_KEY, JSON.stringify(settings))
 }
 
 export const loadPlayHistory = (): string[] => {

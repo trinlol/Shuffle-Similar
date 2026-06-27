@@ -1,5 +1,5 @@
 import type { BlendPhase, SeedMetadata, TrackCandidate } from "../session/types"
-import type { ShuffleSimilarSettings } from "../storage/settings"
+import type { SmartConfig } from "../storage/settings"
 import {
   computeHistoryWeights,
   dedupeCandidates,
@@ -10,17 +10,7 @@ import {
 } from "./filters"
 import { softShuffle } from "./shuffle"
 
-export const getBlendWeights = (position: number, settings: ShuffleSimilarSettings) => {
-  if (settings.songBlendMode === "balanced") {
-    return { similarWeight: 0.5, profileWeight: 0.5 }
-  }
-  if (settings.songBlendMode === "similar") {
-    return { similarWeight: 1.0, profileWeight: 0.0 }
-  }
-  if (settings.songBlendMode === "library") {
-    return { similarWeight: 0.0, profileWeight: 1.0 }
-  }
-
+export const getBlendWeights = (position: number, settings: SmartConfig) => {
   const phases = settings.blendPhases
   const phase = phases.find((entry) => position <= entry.maxPosition) ?? phases[phases.length - 1]
   return {
@@ -35,7 +25,7 @@ export const buildTrackBatch = (
   sessionPlayedUris: string[],
   similarPool: TrackCandidate[],
   profilePool: TrackCandidate[],
-  settings: ShuffleSimilarSettings,
+  settings: SmartConfig,
   count: number
 ): TrackCandidate[] => {
   const { similarWeight, profileWeight } = getBlendWeights(position, settings)
@@ -115,7 +105,7 @@ export const buildSinglePoolBatch = (
   seed: SeedMetadata | null,
   pool: TrackCandidate[],
   sessionPlayedUris: string[],
-  settings: ShuffleSimilarSettings,
+  settings: SmartConfig,
   count: number
 ): TrackCandidate[] => {
   const playedSet = new Set(sessionPlayedUris)

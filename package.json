@@ -1,6 +1,6 @@
 {
   "name": "shuffle-similar",
-  "version": "1.6.0",
+  "version": "1.7.0",
   "description": "Shuffle Similar Spicetify extension - play songs like your seed, then blend in your library",
   "private": true,
   "scripts": {

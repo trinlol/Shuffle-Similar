@@ -1,5 +1,4 @@
 import { registerContextMenu } from "./ui/contextMenu"
-import { registerSettingsMenu } from "./ui/settingsPage"
 import { registerToggleButton } from "./ui/toggleButton"
 import {
   registerNativeShuffleGuard,
@@ -55,22 +54,12 @@ const tryRegisterContextMenu = () => {
   }
 }
 
-const tryRegisterSettingsMenu = () => {
-  try {
-    registerSettingsMenu()
-  } catch (error) {
-    console.error("[Shuffle Similar] Settings menu registration failed", error)
-  }
-}
-
 const initializeExtension = () => {
   if (initialized) return
   initialized = true
 
   tryRegisterContextMenu()
-  tryRegisterSettingsMenu()
   setTimeout(tryRegisterContextMenu, 2000)
-  setTimeout(tryRegisterSettingsMenu, 2000)
 
   Spicetify.Player.addEventListener("songchange", () => {
     if (sessionManager.isToggleEnabled()) {
@@ -115,7 +104,6 @@ const spicetifyEvents = (
 spicetifyEvents?.platformLoaded?.addListener?.(waitForSpicetify)
 spicetifyEvents?.webpackLoaded?.addListener?.(() => {
   tryRegisterContextMenu()
-  tryRegisterSettingsMenu()
 })
 waitForSpicetify()
 }

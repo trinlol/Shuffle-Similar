@@ -1,5 +1,5 @@
 import type { SeedMetadata, TrackCandidate } from "../session/types"
-import type { ShuffleSimilarSettings } from "../storage/settings"
+import type { SmartConfig } from "../storage/settings"
 import { dedupeCandidates, excludeArtist } from "../algorithm/filters"
 import { candidateFromUri, enrichCandidatesFromSearch } from "./trackMetadata"
 import { getMarket } from "../utils/playability"
@@ -211,7 +211,7 @@ const searchTracks = async (query: string, limit = 50): Promise<TrackCandidate[]
   return enrichCandidatesFromSearch(response?.tracks?.items ?? [])
 }
 
-const buildEraQuery = (seed: SeedMetadata, settings: ShuffleSimilarSettings): string | null => {
+const buildEraQuery = (seed: SeedMetadata, settings: SmartConfig): string | null => {
   if (seed.releaseYear == null) return null
   const start = Math.max(1900, seed.releaseYear - settings.eraWindow)
   const end = seed.releaseYear + settings.eraWindow
@@ -220,7 +220,7 @@ const buildEraQuery = (seed: SeedMetadata, settings: ShuffleSimilarSettings): st
 
 const fetchGenreEraCandidates = async (
   seed: SeedMetadata,
-  settings: ShuffleSimilarSettings
+  settings: SmartConfig
 ): Promise<TrackCandidate[]> => {
   const eraQuery = buildEraQuery(seed, settings)
   const genre = seed.genres[0]
@@ -236,7 +236,7 @@ const fetchGenreEraCandidates = async (
 
 const fetchEraOnlyCandidates = async (
   seed: SeedMetadata,
-  settings: ShuffleSimilarSettings
+  settings: SmartConfig
 ): Promise<TrackCandidate[]> => {
   const eraQuery = buildEraQuery(seed, settings)
   if (!eraQuery) return []
@@ -321,7 +321,7 @@ const fetchAudioFeatures = async (trackId: string): Promise<{ tempo?: number; en
 
 const fetchRecommendations = async (
   seed: SeedMetadata,
-  settings: ShuffleSimilarSettings,
+  settings: SmartConfig,
   limit = 50
 ): Promise<TrackCandidate[]> => {
   try {
@@ -364,7 +364,7 @@ const fetchRecommendations = async (
 
 export const fetchSimilarPool = async (
   seed: SeedMetadata,
-  settings: ShuffleSimilarSettings
+  settings: SmartConfig
 ): Promise<TrackCandidate[]> => {
   const results = await Promise.allSettled([
     fetchRecommendations(seed, settings, 50),
@@ -420,7 +420,7 @@ export const fetchSimilarPool = async (
 
 export const fetchPlaylistRecommendations = async (
   seeds: TrackCandidate[],
-  settings: ShuffleSimilarSettings,
+  settings: SmartConfig,
   limit = 50
 ): Promise<TrackCandidate[]> => {
   try {
@@ -471,7 +471,7 @@ export const fetchPlaylistRecommendations = async (
  */
 export const fetchPlaylistSimilarPool = async (
   playlistTracks: TrackCandidate[],
-  settings: ShuffleSimilarSettings,
+  settings: SmartConfig,
   seedCount = 3
 ): Promise<TrackCandidate[]> => {
   if (playlistTracks.length === 0) return []
