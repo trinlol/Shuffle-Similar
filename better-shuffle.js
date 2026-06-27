@@ -1,6 +1,6 @@
 // NAME: Better Shuffle
 // DESCRIPTION: Progressive shuffle — similar genre/era first, then your library
-// VERSION: 1.0.0
+// VERSION: 1.5.0
 // AUTHORS: Better Shuffle Contributors
 
 "use strict";
@@ -403,6 +403,8 @@
     artistUri: metadata?.artist_uri ?? metadata?.["artist_uri:1"],
     artistName: metadata?.artist_name ?? metadata?.["artist_name:1"],
     albumUri: metadata?.album_uri,
+    albumName: metadata?.album_title ?? metadata?.album_name,
+    trackName: metadata?.title ?? metadata?.name ?? metadata?.track_name,
     popularity: metadata?.popularity ? Number(metadata.popularity) : void 0,
     releaseYear: metadata?.release_year ? Number(metadata.release_year) : void 0
   });
@@ -428,6 +430,7 @@
       artistName: metadata.artist_name ?? metadata["artist_name:1"] ?? "",
       artistUri: metadata.artist_uri ?? metadata["artist_uri:1"] ?? "",
       albumUri: metadata.album_uri,
+      albumName: metadata.album_title ?? metadata.album_name,
       releaseYear: parseYear(metadata.release_year ?? metadata.album_year),
       genres: []
     };
@@ -441,6 +444,9 @@
       const artist = track?.artists?.[0];
       const artistId = artist?.id ?? getUriId(artist?.uri ?? "");
       const genres = artistId ? await fetchArtistGenres(artistId) : [];
+      const features = await Spicetify.CosmosAsync.get(
+        `https://api.spotify.com/v1/audio-features/${base.trackId}`
+      ).catch(() => null);
       return enrichSeedMetadata({
         uri,
         trackId: base.trackId,
@@ -448,8 +454,10 @@
         artistName: artist?.name ?? base.artistName,
         artistUri: artist?.uri ?? base.artistUri,
         albumUri: track?.album?.uri ?? base.albumUri,
+        albumName: track?.album?.name ?? base.albumName,
         releaseYear: parseYear(track?.album?.release_date) ?? base.releaseYear,
-        genres
+        genres,
+        instrumentalness: features?.instrumentalness ?? void 0
       });
     } catch {
       return enrichSeedMetadata(base);
@@ -467,8 +475,10 @@
       if (errors?.length) return seed;
       const album = data?.albumUnion;
       const releaseYear = parseYear(album?.date?.isoString ?? album?.date?.year);
+      const albumName = album?.name;
       return {
         ...seed,
+        albumName: albumName ?? seed.albumName,
         releaseYear: releaseYear ?? seed.releaseYear
       };
     } catch {
@@ -487,6 +497,8 @@
         artistUri: artist?.uri ?? (artist?.id ? `spotify:artist:${artist.id}` : void 0),
         artistName: artist?.name,
         albumUri: track.album?.uri ?? (track.album?.id ? `spotify:album:${track.album.id}` : void 0),
+        albumName: track.album?.name,
+        trackName: track.name,
         popularity: track.popularity,
         releaseYear: parseYear(track.album?.release_date)
       });
@@ -821,6 +833,108 @@
       return [];
     }
   };
+  var enrichAudioFeaturesAndMetadata = async (candidates) => {
+    if (candidates.length === 0) return candidates;
+    const ids = candidates.map((c) => getUriId(c.uri)).filter(Boolean);
+    const featuresMap = /* @__PURE__ */ new Map();
+    const featurePromises = [];
+    const featureChunkSize = 100;
+    for (let i = 0; i < ids.length; i += featureChunkSize) {
+      const chunkIds = ids.slice(i, i + featureChunkSize);
+      featurePromises.push(
+        (async () => {
+          try {
+            const res = await Spicetify.CosmosAsync.get(
+              `https://api.spotify.com/v1/audio-features?ids=${chunkIds.join(",")}`
+            );
+            const audioFeatures = res?.audio_features ?? [];
+            for (const feat of audioFeatures) {
+              if (feat?.id) {
+                featuresMap.set(`spotify:track:${feat.id}`, {
+                  instrumentalness: feat.instrumentalness
+                });
+              }
+            }
+          } catch (error) {
+            console.warn("[Better Shuffle] Failed to fetch audio features chunk", error);
+          }
+        })()
+      );
+    }
+    const metadataMap = /* @__PURE__ */ new Map();
+    const metadataPromises = [];
+    const metadataChunkSize = 50;
+    const needsMetadata = candidates.filter((c) => !c.albumName || !c.trackName || c.popularity === void 0);
+    const needsMetadataIds = needsMetadata.map((c) => getUriId(c.uri)).filter(Boolean);
+    for (let i = 0; i < needsMetadataIds.length; i += metadataChunkSize) {
+      const chunkIds = needsMetadataIds.slice(i, i + metadataChunkSize);
+      metadataPromises.push(
+        (async () => {
+          try {
+            const res = await Spicetify.CosmosAsync.get(
+              `https://api.spotify.com/v1/tracks?ids=${chunkIds.join(",")}`
+            );
+            const tracks = res?.tracks ?? [];
+            for (const track of tracks) {
+              if (track?.id) {
+                metadataMap.set(`spotify:track:${track.id}`, {
+                  albumName: track.album?.name,
+                  trackName: track.name,
+                  popularity: track.popularity
+                });
+              }
+            }
+          } catch (error) {
+            console.warn("[Better Shuffle] Failed to fetch track metadata chunk", error);
+          }
+        })()
+      );
+    }
+    await Promise.allSettled([...featurePromises, ...metadataPromises]);
+    return candidates.map((candidate) => {
+      const feat = featuresMap.get(candidate.uri);
+      const meta = metadataMap.get(candidate.uri);
+      return {
+        ...candidate,
+        instrumentalness: feat?.instrumentalness ?? candidate.instrumentalness,
+        albumName: meta?.albumName ?? candidate.albumName,
+        trackName: meta?.trackName ?? candidate.trackName,
+        popularity: meta?.popularity ?? candidate.popularity
+      };
+    });
+  };
+  var filterInstrumentalsAndSoundtracks = (candidates, seed) => {
+    const isSeedSoundtrack = seed.albumName && /(Soundtrack|Score|OST|Original Motion Picture|Original Soundtrack|Broadway|Musical)/i.test(
+      seed.albumName
+    ) || seed.genres.some(
+      (genre) => /(soundtrack|score|orchestral|movie tunes|show tunes|broadway|musical)/i.test(genre)
+    );
+    const isSeedVocal = seed.instrumentalness === void 0 || seed.instrumentalness < 0.2;
+    console.info(
+      `[Better Shuffle] Seed "${seed.trackName}" analysis: isSeedVocal = ${isSeedVocal}, isSeedSoundtrack = ${isSeedSoundtrack}`
+    );
+    return candidates.filter((candidate) => {
+      if (isSeedVocal && candidate.instrumentalness !== void 0 && candidate.instrumentalness > 0.5) {
+        console.log(`[Better Shuffle] Filtered out instrumental track: ${candidate.trackName} (instrumentalness: ${candidate.instrumentalness})`);
+        return false;
+      }
+      if (!isSeedSoundtrack && candidate.albumName) {
+        const isCandidateSoundtrack = /(Soundtrack|Score|OST|Original Motion Picture|Original Soundtrack|Broadway|Musical)/i.test(
+          candidate.albumName
+        );
+        if (isCandidateSoundtrack) {
+          const isDisneyOrVocalPopException = isSeedVocal && candidate.instrumentalness !== void 0 && candidate.instrumentalness < 0.2 && candidate.popularity !== void 0 && candidate.popularity >= 60;
+          if (isDisneyOrVocalPopException) {
+            console.log(`[Better Shuffle] Kept vocal soundtrack exception: ${candidate.trackName} (popularity: ${candidate.popularity})`);
+            return true;
+          }
+          console.log(`[Better Shuffle] Filtered out soundtrack leakage track: ${candidate.trackName} (album: ${candidate.albumName})`);
+          return false;
+        }
+      }
+      return true;
+    });
+  };
   var fetchSimilarPool = async (seed, settings) => {
     const results = await Promise.allSettled([
       fetchRecommendations(seed, settings, 50),
@@ -844,6 +958,8 @@
         ...excludeArtist(fallback, seed.artistUri, seed.artistName)
       ]);
     }
+    candidates = await enrichAudioFeaturesAndMetadata(candidates);
+    candidates = filterInstrumentalsAndSoundtracks(candidates, seed);
     return candidates.filter((candidate) => candidate.uri !== seed.uri);
   };
 

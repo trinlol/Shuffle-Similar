@@ -26,7 +26,7 @@ const buildOptions = {
   jsxFragment: "Spicetify.React.Fragment",
   logLevel: "info",
   banner: {
-    js: "// NAME: Better Shuffle\n// DESCRIPTION: Progressive shuffle — similar genre/era first, then your library\n// VERSION: 1.0.0\n// AUTHORS: Better Shuffle Contributors\n",
+    js: "// NAME: Better Shuffle\n// DESCRIPTION: Progressive shuffle — similar genre/era first, then your library\n// VERSION: 1.5.0\n// AUTHORS: Better Shuffle Contributors\n",
   },
 }
 
