@@ -3,8 +3,11 @@ export type TrackCandidate = {
   artistUri?: string
   artistName?: string
   albumUri?: string
+  albumName?: string
+  trackName?: string
   popularity?: number
   releaseYear?: number
+  instrumentalness?: number
 }
 
 export type SeedMetadata = {
@@ -14,8 +17,10 @@ export type SeedMetadata = {
   artistName: string
   artistUri: string
   albumUri?: string
+  albumName?: string
   releaseYear?: number
   genres: string[]
+  instrumentalness?: number
 }
 
 export type BlendPhase = {

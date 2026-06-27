@@ -235,6 +235,149 @@ const fetchRecommendations = async (
   }
 }
 
+const enrichAudioFeaturesAndMetadata = async (
+  candidates: TrackCandidate[]
+): Promise<TrackCandidate[]> => {
+  if (candidates.length === 0) return candidates
+
+  const ids = candidates.map((c) => getUriId(c.uri)).filter(Boolean)
+
+  // 1. Fetch audio features in chunks of 100
+  const featuresMap = new Map<string, { instrumentalness?: number }>()
+  const featurePromises: Array<Promise<void>> = []
+  const featureChunkSize = 100
+
+  for (let i = 0; i < ids.length; i += featureChunkSize) {
+    const chunkIds = ids.slice(i, i + featureChunkSize)
+    featurePromises.push(
+      (async () => {
+        try {
+          const res = await Spicetify.CosmosAsync.get(
+            `https://api.spotify.com/v1/audio-features?ids=${chunkIds.join(",")}`
+          )
+          const audioFeatures = res?.audio_features ?? []
+          for (const feat of audioFeatures) {
+            if (feat?.id) {
+              featuresMap.set(`spotify:track:${feat.id}`, {
+                instrumentalness: feat.instrumentalness,
+              })
+            }
+          }
+        } catch (error) {
+          console.warn("[Better Shuffle] Failed to fetch audio features chunk", error)
+        }
+      })()
+    )
+  }
+
+  // 2. Fetch track metadata in chunks of 50 to fill in missing albumName/popularity/trackName
+  const metadataMap = new Map<string, { albumName?: string; trackName?: string; popularity?: number }>()
+  const metadataPromises: Array<Promise<void>> = []
+  const metadataChunkSize = 50
+
+  const needsMetadata = candidates.filter((c) => !c.albumName || !c.trackName || c.popularity === undefined)
+  const needsMetadataIds = needsMetadata.map((c) => getUriId(c.uri)).filter(Boolean)
+
+  for (let i = 0; i < needsMetadataIds.length; i += metadataChunkSize) {
+    const chunkIds = needsMetadataIds.slice(i, i + metadataChunkSize)
+    metadataPromises.push(
+      (async () => {
+        try {
+          const res = await Spicetify.CosmosAsync.get(
+            `https://api.spotify.com/v1/tracks?ids=${chunkIds.join(",")}`
+          )
+          const tracks = res?.tracks ?? []
+          for (const track of tracks) {
+            if (track?.id) {
+              metadataMap.set(`spotify:track:${track.id}`, {
+                albumName: track.album?.name,
+                trackName: track.name,
+                popularity: track.popularity,
+              })
+            }
+          }
+        } catch (error) {
+          console.warn("[Better Shuffle] Failed to fetch track metadata chunk", error)
+        }
+      })()
+    )
+  }
+
+  // Wait for all requests to finish
+  await Promise.allSettled([...featurePromises, ...metadataPromises])
+
+  // Merge the fetched data back to candidates
+  return candidates.map((candidate) => {
+    const feat = featuresMap.get(candidate.uri)
+    const meta = metadataMap.get(candidate.uri)
+    return {
+      ...candidate,
+      instrumentalness: feat?.instrumentalness ?? candidate.instrumentalness,
+      albumName: meta?.albumName ?? candidate.albumName,
+      trackName: meta?.trackName ?? candidate.trackName,
+      popularity: meta?.popularity ?? candidate.popularity,
+    }
+  })
+}
+
+const filterInstrumentalsAndSoundtracks = (
+  candidates: TrackCandidate[],
+  seed: SeedMetadata
+): TrackCandidate[] => {
+  // Determine if the seed track itself is a soundtrack or score.
+  const isSeedSoundtrack =
+    (seed.albumName &&
+      /(Soundtrack|Score|OST|Original Motion Picture|Original Soundtrack|Broadway|Musical)/i.test(
+        seed.albumName
+      )) ||
+    seed.genres.some((genre) =>
+      /(soundtrack|score|orchestral|movie tunes|show tunes|broadway|musical)/i.test(genre)
+    )
+
+  // Determine if the seed track is vocal (instrumentalness < 0.2).
+  const isSeedVocal = seed.instrumentalness === undefined || seed.instrumentalness < 0.2
+
+  console.info(
+    `[Better Shuffle] Seed "${seed.trackName}" analysis: isSeedVocal = ${isSeedVocal}, isSeedSoundtrack = ${isSeedSoundtrack}`
+  )
+
+  return candidates.filter((candidate) => {
+    // 1. Vocal Tracks Protection:
+    if (isSeedVocal && candidate.instrumentalness !== undefined && candidate.instrumentalness > 0.5) {
+      console.log(`[Better Shuffle] Filtered out instrumental track: ${candidate.trackName} (instrumentalness: ${candidate.instrumentalness})`)
+      return false
+    }
+
+    // 2. Soundtrack Leakage Protection:
+    if (!isSeedSoundtrack && candidate.albumName) {
+      const isCandidateSoundtrack =
+        /(Soundtrack|Score|OST|Original Motion Picture|Original Soundtrack|Broadway|Musical)/i.test(
+          candidate.albumName
+        )
+      
+      if (isCandidateSoundtrack) {
+        // Exception: Disney/movie vocal pop songs (which have low instrumentalness < 0.2 and high popularity >= 60)
+        const isDisneyOrVocalPopException =
+          isSeedVocal &&
+          candidate.instrumentalness !== undefined &&
+          candidate.instrumentalness < 0.2 &&
+          candidate.popularity !== undefined &&
+          candidate.popularity >= 60
+
+        if (isDisneyOrVocalPopException) {
+          console.log(`[Better Shuffle] Kept vocal soundtrack exception: ${candidate.trackName} (popularity: ${candidate.popularity})`)
+          return true
+        }
+
+        console.log(`[Better Shuffle] Filtered out soundtrack leakage track: ${candidate.trackName} (album: ${candidate.albumName})`)
+        return false
+      }
+    }
+
+    return true
+  })
+}
+
 export const fetchSimilarPool = async (
   seed: SeedMetadata,
   settings: BetterShuffleSettings
@@ -267,6 +410,12 @@ export const fetchSimilarPool = async (
       ...excludeArtist(fallback, seed.artistUri, seed.artistName),
     ])
   }
+
+  // 1. Batch enrich candidates with audio features and track metadata
+  candidates = await enrichAudioFeaturesAndMetadata(candidates)
+
+  // 2. Filter out instrumentals/soundtracks based on AGENTS.md rules
+  candidates = filterInstrumentalsAndSoundtracks(candidates, seed)
 
   return candidates.filter((candidate) => candidate.uri !== seed.uri)
 }

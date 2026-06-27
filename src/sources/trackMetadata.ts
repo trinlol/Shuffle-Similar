@@ -16,6 +16,8 @@ export const candidateFromUri = (uri: string, metadata?: Record<string, string>)
   artistUri: metadata?.artist_uri ?? metadata?.["artist_uri:1"],
   artistName: metadata?.artist_name ?? metadata?.["artist_name:1"],
   albumUri: metadata?.album_uri,
+  albumName: metadata?.album_title ?? metadata?.album_name,
+  trackName: metadata?.title ?? metadata?.name ?? metadata?.track_name,
   popularity: metadata?.popularity ? Number(metadata.popularity) : undefined,
   releaseYear: metadata?.release_year ? Number(metadata.release_year) : undefined,
 })
@@ -45,6 +47,7 @@ export const getSeedMetadataFromPlayer = (uri: string): SeedMetadata => {
     artistName: metadata.artist_name ?? metadata["artist_name:1"] ?? "",
     artistUri: metadata.artist_uri ?? metadata["artist_uri:1"] ?? "",
     albumUri: metadata.album_uri,
+    albumName: metadata.album_title ?? metadata.album_name,
     releaseYear: parseYear(metadata.release_year ?? metadata.album_year),
     genres: [],
   }
@@ -60,6 +63,9 @@ export const fetchSeedMetadata = async (uri: string): Promise<SeedMetadata> => {
     const artist = track?.artists?.[0]
     const artistId = artist?.id ?? getUriId(artist?.uri ?? "")
     const genres = artistId ? await fetchArtistGenres(artistId) : []
+    const features = await Spicetify.CosmosAsync.get(
+      `https://api.spotify.com/v1/audio-features/${base.trackId}`
+    ).catch(() => null)
 
     return enrichSeedMetadata({
       uri,
@@ -68,8 +74,10 @@ export const fetchSeedMetadata = async (uri: string): Promise<SeedMetadata> => {
       artistName: artist?.name ?? base.artistName,
       artistUri: artist?.uri ?? base.artistUri,
       albumUri: track?.album?.uri ?? base.albumUri,
+      albumName: track?.album?.name ?? base.albumName,
       releaseYear: parseYear(track?.album?.release_date) ?? base.releaseYear,
       genres,
+      instrumentalness: features?.instrumentalness ?? undefined,
     })
   } catch {
     return enrichSeedMetadata(base)
@@ -91,8 +99,10 @@ export const enrichSeedMetadata = async (seed: SeedMetadata): Promise<SeedMetada
 
     const album = data?.albumUnion
     const releaseYear = parseYear(album?.date?.isoString ?? album?.date?.year)
+    const albumName = album?.name
     return {
       ...seed,
+      albumName: albumName ?? seed.albumName,
       releaseYear: releaseYear ?? seed.releaseYear,
     }
   } catch {
@@ -110,7 +120,7 @@ export const enrichCandidatesFromSearch = (items: Array<Record<string, unknown>>
       name?: string
       popularity?: number
       is_playable?: boolean
-      album?: { release_date?: string; uri?: string; id?: string }
+      album?: { release_date?: string; uri?: string; id?: string; name?: string }
       artists?: Array<{ id?: string; name?: string; uri?: string }>
     }
     const uri = track.uri ?? (track.id ? `spotify:track:${track.id}` : "")
@@ -121,6 +131,8 @@ export const enrichCandidatesFromSearch = (items: Array<Record<string, unknown>>
       artistUri: artist?.uri ?? (artist?.id ? `spotify:artist:${artist.id}` : undefined),
       artistName: artist?.name,
       albumUri: track.album?.uri ?? (track.album?.id ? `spotify:album:${track.album.id}` : undefined),
+      albumName: track.album?.name,
+      trackName: track.name,
       popularity: track.popularity,
       releaseYear: parseYear(track.album?.release_date),
     })
