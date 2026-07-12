@@ -1,8 +1,8 @@
-import { buildTrackBatch, getBlendWeights, buildSinglePoolBatch } from "../algorithm/progressiveBlend"
+import { buildTrackBatch, getBlendWeights, buildSinglePoolBatch, buildPlaylistBatch } from "../algorithm/progressiveBlend"
 import { sessionManager } from "../session/SessionManager"
 import type { SeedMetadata, TrackCandidate } from "../session/types"
 import { fetchProfilePool, fetchAllPlaylistTracks, fetchTopTracks } from "../sources/profileTracks"
-import { fetchSimilarPool, fetchPlaylistSimilarPool } from "../sources/similarTracks"
+import { fetchSimilarPool, fetchPlaylistSimilarPool, enrichPlaylistTracks } from "../sources/similarTracks"
 import { fetchSeedMetadata } from "../sources/trackMetadata"
 import { getSmartConfig, loadPlayHistory } from "../storage/settings"
 import { detectForeignInjection, enableAutoplayGuard, syncKnownQueue } from "../queue/autoplayGuard"
@@ -29,10 +29,16 @@ type StartOptions = {
   forceRefreshPools?: boolean
   playSeed?: boolean
   replaceUpcoming?: boolean
+  buildOnly?: boolean
 }
 
+const getSessionConfig = (seed?: SeedMetadata | null) => ({
+  ...getSmartConfig(seed),
+  skipFeedback: sessionManager.getSkipFeedback(),
+})
+
 const ensurePools = async (seed: SeedMetadata, forceRefresh = false) => {
-  const settings = getSmartConfig(seed)
+  const settings = getSessionConfig(seed)
   let similar = forceRefresh ? [] : sessionManager.getSimilarPool()
   let profile = forceRefresh ? [] : sessionManager.getProfilePool()
 
@@ -48,27 +54,26 @@ const ensurePools = async (seed: SeedMetadata, forceRefresh = false) => {
 }
 
 const buildPlaylistPlayableBatch = async () => {
-  const playlistTracks = sessionManager.getPlaylistTracks()
+  const playlistTracks = await enrichPlaylistTracks(sessionManager.getPlaylistTracks())
   if (playlistTracks.length === 0) {
     throw new Error("Playlist has no tracks.")
   }
 
   const seed = sessionManager.getSeed()
-  const settings = getSmartConfig(seed)
+  const settings = getSessionConfig(seed)
   const playedUris = sessionManager.getPlayedUris()
   const queuedUris = sessionManager.getQueuedUris()
   const upcomingQueueUris = getUpcomingQueueUris()
   const excludeUris = [...new Set([...playedUris, ...queuedUris, ...upcomingQueueUris])]
 
   // Smart Mode: blend playlist tracks (50% weight) with similar recommendations (50% weight)
-  const similarPool = await fetchPlaylistSimilarPool(playlistTracks, settings, 3)
+  const similarPool = await fetchPlaylistSimilarPool(playlistTracks, settings, 5)
 
-  let batch = buildTrackBatch(
-    seed!,
-    sessionManager.getPosition(),
-    excludeUris,
-    similarPool,
+  let batch = buildPlaylistBatch(
     playlistTracks,
+    similarPool,
+    excludeUris,
+    sessionManager.getTopTracksBlacklist(),
     settings,
     settings.initialQueueSize
   )
@@ -77,7 +82,7 @@ const buildPlaylistPlayableBatch = async () => {
   if (batch.length === 0) {
     batch = buildSinglePoolBatch(
       seed,
-      playlistTracks,
+      similarPool,
       excludeUris,
       settings,
       settings.initialQueueSize
@@ -91,7 +96,7 @@ const buildPlaylistPlayableBatch = async () => {
   const playableQueueUris = await filterPlayableUris(batch.map((track) => track.uri))
   const queueUris = playableQueueUris.length > 0 ? playableQueueUris : batch.map((track) => track.uri)
 
-  return { playableQueueUris: queueUris, settings, similarCount: playlistTracks.length, profileCount: 0 }
+  return { playableQueueUris: queueUris, settings, similarCount: similarPool.length, profileCount: playlistTracks.length }
 }
 
 const buildArtistPlayableBatch = async () => {
@@ -101,7 +106,7 @@ const buildArtistPlayableBatch = async () => {
   }
 
   const seed = sessionManager.getSeed()!
-  const settings = getSmartConfig(seed)
+  const settings = getSessionConfig(seed)
   const playedUris = sessionManager.getPlayedUris()
   const queuedUris = sessionManager.getQueuedUris()
   const upcomingQueueUris = getUpcomingQueueUris()
@@ -227,13 +232,22 @@ export const startShuffleSimilar = async (
   } else {
     sessionManager.startSession(seed)
   }
-  enableAutoplayGuard()
-  enforceNativeShuffleOff()
+  if (!options.buildOnly) {
+    enableAutoplayGuard()
+    enforceNativeShuffleOff()
+  }
 
   const { playableQueueUris, settings, similarCount } = await buildPlayableBatch(
     seed,
     options.forceRefreshPools ?? true
   )
+
+  const result = {
+    seed,
+    queueUris: playableQueueUris.filter((uri) => uri !== seed.uri),
+  }
+
+  if (options.buildOnly) return result
 
   const currentUri = Spicetify.Player.data?.item?.uri
 
@@ -266,13 +280,22 @@ export const startShuffleSimilar = async (
   Spicetify.showNotification(
     formatSuccessMessage(playableQueueUris.length, sessionManager.getPosition(), settings, similarCount)
   )
+
+  return result
 }
 
 export const startFromContextMenu = async (seedUri: string, contextUri?: string | null) => {
-  await startShuffleSimilar(seedUri, contextUri, {
+  return await startShuffleSimilar(seedUri, contextUri, {
     forceRefreshPools: true,
     playSeed: true,
     replaceUpcoming: false,
+  })
+}
+
+export const buildFromContextMenu = async (seedUri: string, contextUri?: string | null) => {
+  return await startShuffleSimilar(seedUri, contextUri, {
+    forceRefreshPools: true,
+    buildOnly: true,
   })
 }
 
@@ -302,7 +325,7 @@ export const refillQueueIfNeeded = async () => {
   const seed = sessionManager.getSeed()
   if (!seed) return
 
-  const settings = getSmartConfig(seed)
+  const settings = getSessionConfig(seed)
   const upcoming = getUpcomingCount()
   if (upcoming >= settings.refillThreshold) return
 
@@ -340,6 +363,7 @@ export const handleSongChange = async () => {
   if (!sessionManager.isToggleEnabled() || !sessionManager.isActive()) return
 
   enforceNativeShuffleOff()
+  sessionManager.transitionToTrack(uri)
   sessionManager.recordTrackPlayed(uri)
   await refillQueueIfNeeded()
 }

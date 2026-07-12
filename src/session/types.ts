@@ -8,6 +8,11 @@ export type TrackCandidate = {
   popularity?: number
   releaseYear?: number
   instrumentalness?: number
+  tempo?: number
+  energy?: number
+  valence?: number
+  danceability?: number
+  acousticness?: number
 }
 
 export type SeedMetadata = {
@@ -21,6 +26,23 @@ export type SeedMetadata = {
   releaseYear?: number
   genres: string[]
   instrumentalness?: number
+  popularity?: number
+  tempo?: number
+  energy?: number
+  valence?: number
+  danceability?: number
+  acousticness?: number
+}
+
+export type AcousticProfile = Pick<
+  TrackCandidate,
+  "tempo" | "energy" | "valence" | "danceability" | "acousticness" | "instrumentalness"
+>
+
+export type SkipFeedback = {
+  artistUri?: string
+  artistName?: string
+  profile: AcousticProfile
 }
 
 export type BlendPhase = {

@@ -5,20 +5,35 @@ import { candidateFromUri, enrichCandidatesFromSearch } from "./trackMetadata"
 import { getMarket } from "../utils/playability"
 import { getUriId } from "../utils/uri"
 
+type CachedFeatures = Pick<TrackCandidate, "instrumentalness" | "tempo" | "energy" | "valence" | "danceability" | "acousticness">
+type CachedMetadata = Pick<TrackCandidate, "albumUri" | "albumName" | "trackName" | "popularity" | "releaseYear">
+const featureCache = new Map<string, CachedFeatures>()
+const metadataCache = new Map<string, CachedMetadata>()
+
 const enrichAudioFeaturesAndMetadata = async (
   candidates: TrackCandidate[]
 ): Promise<TrackCandidate[]> => {
   if (candidates.length === 0) return candidates
 
-  const ids = candidates.map((c) => getUriId(c.uri)).filter(Boolean)
-
   // 1. Fetch audio features in chunks of 100
-  const featuresMap = new Map<string, { instrumentalness?: number }>()
+  const featuresMap = new Map<string, {
+    instrumentalness?: number
+    tempo?: number
+    energy?: number
+    valence?: number
+    danceability?: number
+    acousticness?: number
+  }>()
+  for (const candidate of candidates) {
+    const cached = featureCache.get(candidate.uri)
+    if (cached) featuresMap.set(candidate.uri, cached)
+  }
   const featurePromises: Array<Promise<void>> = []
   const featureChunkSize = 100
 
-  for (let i = 0; i < ids.length; i += featureChunkSize) {
-    const chunkIds = ids.slice(i, i + featureChunkSize)
+  const uncachedFeatureIds = candidates.filter((candidate) => !featureCache.has(candidate.uri)).map((candidate) => getUriId(candidate.uri)).filter(Boolean)
+  for (let i = 0; i < uncachedFeatureIds.length; i += featureChunkSize) {
+    const chunkIds = uncachedFeatureIds.slice(i, i + featureChunkSize)
     featurePromises.push(
       (async () => {
         try {
@@ -28,9 +43,17 @@ const enrichAudioFeaturesAndMetadata = async (
           const audioFeatures = res?.audio_features ?? []
           for (const feat of audioFeatures) {
             if (feat?.id) {
-              featuresMap.set(`spotify:track:${feat.id}`, {
+              const uri = `spotify:track:${feat.id}`
+              const cached = {
                 instrumentalness: feat.instrumentalness,
-              })
+                tempo: feat.tempo,
+                energy: feat.energy,
+                valence: feat.valence,
+                danceability: feat.danceability,
+                acousticness: feat.acousticness,
+              }
+              featuresMap.set(uri, cached)
+              featureCache.set(uri, cached)
             }
           }
         } catch (error) {
@@ -41,11 +64,17 @@ const enrichAudioFeaturesAndMetadata = async (
   }
 
   // 2. Fetch track metadata in chunks of 50 to fill in missing albumName/popularity/trackName
-  const metadataMap = new Map<string, { albumName?: string; trackName?: string; popularity?: number }>()
+  const metadataMap = new Map<string, CachedMetadata>()
+  for (const candidate of candidates) {
+    const cached = metadataCache.get(candidate.uri)
+    if (cached) metadataMap.set(candidate.uri, cached)
+  }
   const metadataPromises: Array<Promise<void>> = []
   const metadataChunkSize = 50
 
-  const needsMetadata = candidates.filter((c) => !c.albumName || !c.trackName || c.popularity === undefined)
+  const needsMetadata = candidates.filter((c) =>
+    !metadataCache.has(c.uri) && (!c.albumName || !c.trackName || c.popularity === undefined || !c.albumUri || c.releaseYear === undefined)
+  )
   const needsMetadataIds = needsMetadata.map((c) => getUriId(c.uri)).filter(Boolean)
 
   for (let i = 0; i < needsMetadataIds.length; i += metadataChunkSize) {
@@ -59,11 +88,16 @@ const enrichAudioFeaturesAndMetadata = async (
           const tracks = res?.tracks ?? []
           for (const track of tracks) {
             if (track?.id) {
-              metadataMap.set(`spotify:track:${track.id}`, {
+              const uri = `spotify:track:${track.id}`
+              const cached = {
+                albumUri: track.album?.uri,
                 albumName: track.album?.name,
                 trackName: track.name,
                 popularity: track.popularity,
-              })
+                releaseYear: Number.parseInt(track.album?.release_date?.slice(0, 4), 10) || undefined,
+              }
+              metadataMap.set(uri, cached)
+              metadataCache.set(uri, cached)
             }
           }
         } catch (error) {
@@ -83,12 +117,23 @@ const enrichAudioFeaturesAndMetadata = async (
     return {
       ...candidate,
       instrumentalness: feat?.instrumentalness ?? candidate.instrumentalness,
+      tempo: feat?.tempo ?? candidate.tempo,
+      energy: feat?.energy ?? candidate.energy,
+      valence: feat?.valence ?? candidate.valence,
+      danceability: feat?.danceability ?? candidate.danceability,
+      acousticness: feat?.acousticness ?? candidate.acousticness,
       albumName: meta?.albumName ?? candidate.albumName,
+      albumUri: meta?.albumUri ?? candidate.albumUri,
       trackName: meta?.trackName ?? candidate.trackName,
       popularity: meta?.popularity ?? candidate.popularity,
+      releaseYear: meta?.releaseYear ?? candidate.releaseYear,
     }
   })
 }
+
+export const enrichPlaylistTracks = async (
+  tracks: TrackCandidate[]
+): Promise<TrackCandidate[]> => enrichAudioFeaturesAndMetadata(tracks)
 
 const filterInstrumentalsAndSoundtracks = (
   candidates: TrackCandidate[],
@@ -476,11 +521,18 @@ export const fetchPlaylistSimilarPool = async (
 ): Promise<TrackCandidate[]> => {
   if (playlistTracks.length === 0) return []
 
+  // Enrich the complete playlist so the final ranker can compare candidates
+  // against every track, not just the handful used as network seeds.
+  const enrichedPlaylistTracks = await enrichAudioFeaturesAndMetadata(playlistTracks)
+
   // Build the exclusion set from all playlist track URIs
-  const playlistUriSet = new Set(playlistTracks.map((t) => t.uri))
+  const playlistUriSet = new Set(enrichedPlaylistTracks.map((t) => t.uri))
 
   // Sample seed tracks spread across the playlist for diversity
-  const seeds = sampleSpread(playlistTracks, Math.min(seedCount, playlistTracks.length))
+  const seeds = sampleSpread(
+    enrichedPlaylistTracks,
+    Math.min(seedCount, enrichedPlaylistTracks.length)
+  )
 
   // Build SeedMetadata for each sampled track
   const seedMetadatas = await Promise.all(

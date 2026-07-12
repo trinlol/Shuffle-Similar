@@ -8,7 +8,6 @@ import {
   getRecentKeys,
   pickFromPool,
 } from "./filters"
-import { softShuffle } from "./shuffle"
 
 export const getBlendWeights = (position: number, settings: SmartConfig) => {
   const phases = settings.blendPhases
@@ -50,15 +49,13 @@ export const buildTrackBatch = (
 
   const selected: TrackCandidate[] = []
   const recentPlayed: TrackCandidate[] = []
-  // Cross-pool dedup set: prevents picking the same URI from both pools
-  const pickedSet = new Set<string>()
   const albumSpacing = 2
 
   while (selected.length < count && (similar.length > 0 || profile.length > 0)) {
     const recentKeys = getRecentKeys(recentPlayed, settings.artistSpacing)
     const useSimilar =
       similar.length > 0 &&
-      (profile.length === 0 || Math.random() < similarWeight / (similarWeight + profileWeight))
+      (profile.length === 0 || Math.random() < similarWeight / Math.max(0.0001, similarWeight + profileWeight))
 
     const pool = useSimilar ? similar : profile
     const favorObscure = settings.deprioritizePopular
@@ -72,6 +69,8 @@ export const buildTrackBatch = (
       historyWeights,
       seedYear: seed.releaseYear,
       eraWindow: settings.eraWindow,
+      seedProfile: seed,
+      skipFeedback: settings.skipFeedback,
     })
 
     if (!picked) break
@@ -79,7 +78,6 @@ export const buildTrackBatch = (
     selected.push(picked)
     recentPlayed.push(picked)
     playedSet.add(picked.uri)
-    pickedSet.add(picked.uri)
 
     // Remove from the source pool
     if (useSimilar) {
@@ -96,9 +94,8 @@ export const buildTrackBatch = (
     }
   }
 
-  // Soft shuffle preserves the deliberate ordering (spacing, era affinity)
-  // while introducing enough jitter (±3 positions) to feel unpredictable
-  return softShuffle(selected, 3)
+  // Selection is already random; preserve this constraint-safe ordering.
+  return selected
 }
 
 export const buildSinglePoolBatch = (
@@ -137,6 +134,8 @@ export const buildSinglePoolBatch = (
       historyWeights,
       seedYear: seed?.releaseYear,
       eraWindow: settings.eraWindow,
+      seedProfile: seed ?? undefined,
+      skipFeedback: settings.skipFeedback,
     })
 
     if (!picked) {
@@ -149,6 +148,8 @@ export const buildSinglePoolBatch = (
         historyWeights,
         seedYear: seed?.releaseYear,
         eraWindow: settings.eraWindow,
+        seedProfile: seed ?? undefined,
+        skipFeedback: settings.skipFeedback,
       })
       if (!fallbackPicked) break
       selected.push(fallbackPicked)
@@ -163,5 +164,56 @@ export const buildSinglePoolBatch = (
     }
   }
 
-  return softShuffle(selected, 3)
+  return selected
+}
+
+/**
+ * Playlist mode: all playlist tracks are references, while only tracks outside
+ * the playlist are eligible outputs. This keeps the playlist's full sound
+ * profile in play without simply replaying its contents.
+ */
+export const buildPlaylistBatch = (
+  playlistTracks: TrackCandidate[],
+  candidatePool: TrackCandidate[],
+  sessionPlayedUris: string[],
+  topTrackUris: string[],
+  settings: SmartConfig,
+  count: number
+): TrackCandidate[] => {
+  const playlistUris = new Set(playlistTracks.map((track) => track.uri))
+  const playedUris = new Set(sessionPlayedUris)
+  let eligible = dedupeCandidates(filterPlayableCandidates(candidatePool)).filter(
+    (candidate) => !playlistUris.has(candidate.uri) && !playedUris.has(candidate.uri)
+  )
+
+  if (eligible.length === 0) {
+    const recent = new Set(sessionPlayedUris.slice(-settings.historyPenaltyWindow))
+    eligible = dedupeCandidates(filterPlayableCandidates(candidatePool)).filter(
+      (candidate) => !playlistUris.has(candidate.uri) && !recent.has(candidate.uri)
+    )
+  }
+
+  const historyWeights = computeHistoryWeights(eligible, sessionPlayedUris, settings.historyPenaltyWindow)
+  const topTracks = new Set(topTrackUris)
+  const selected: TrackCandidate[] = []
+  const recentPlayed: TrackCandidate[] = []
+
+  while (selected.length < count && eligible.length > 0) {
+    const picked = pickFromPool(eligible, {
+      recentKeys: getRecentKeys(recentPlayed, settings.artistSpacing),
+      artistSpacing: settings.artistSpacing,
+      albumSpacing: 2,
+      favorObscure: true,
+      historyWeights,
+      playlistProfiles: playlistTracks,
+      topTrackUris: topTracks,
+      skipFeedback: settings.skipFeedback,
+    })
+    if (!picked) break
+    selected.push(picked)
+    recentPlayed.push(picked)
+    eligible = eligible.filter((candidate) => candidate.uri !== picked.uri)
+  }
+
+  return selected
 }

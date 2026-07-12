@@ -68,6 +68,14 @@ const initializeExtension = () => {
     updateNativeShuffleGuard()
     void handleSongChange()
   })
+  Spicetify.Player.addEventListener("onprogress", () => {
+    if (sessionManager.isActive()) {
+      sessionManager.recordProgress(
+        Spicetify.Player.getProgress(),
+        Spicetify.Player.getDuration()
+      )
+    }
+  })
 
   setTimeout(initializePlaybarFeatures, PLAYBAR_INIT_DELAY_MS)
 

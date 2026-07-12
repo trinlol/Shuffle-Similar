@@ -1,4 +1,4 @@
-import type { BlendPhase } from "../session/types"
+import type { BlendPhase, SkipFeedback } from "../session/types"
 
 export type SmartConfig = {
   eraWindow: number
@@ -12,6 +12,7 @@ export type SmartConfig = {
   matchEnergy: boolean
   matchValence: boolean
   blendPhases: BlendPhase[]
+  skipFeedback?: SkipFeedback[]
 }
 
 const HISTORY_KEY = "shuffleSimilar:playHistory"
@@ -40,7 +41,7 @@ export const getSmartConfig = (seed?: { releaseYear?: number; popularity?: numbe
     eraWindow,
     artistSpacing: 3,
     refillThreshold: 3,
-    initialQueueSize: 25,
+    initialQueueSize: 50,
     excludeSeedArtistEarly: true,
     historyPenaltyWindow: 200,
     deprioritizePopular,

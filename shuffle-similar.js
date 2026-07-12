@@ -1,6 +1,6 @@
 // NAME: Shuffle Similar
-// DESCRIPTION: Play songs similar to your seed, with optional progressive blend into your library
-// VERSION: 1.7.0
+// DESCRIPTION: Play songs similar to your seed, with automatic learning and playlist creation
+// VERSION: 1.8.0
 // AUTHORS: Shuffle Similar Contributors
 
 "use strict";
@@ -26,7 +26,7 @@
       eraWindow,
       artistSpacing: 3,
       refillThreshold: 3,
-      initialQueueSize: 25,
+      initialQueueSize: 50,
       excludeSeedArtistEarly: true,
       historyPenaltyWindow: 200,
       deprioritizePopular,
@@ -114,15 +114,6 @@
     }
     return items[items.length - 1];
   };
-  var softShuffle = (array, jitter = 3) => {
-    if (array.length <= 1) return [...array];
-    const indexed = array.map((item, index) => ({
-      item,
-      sortKey: index + (Math.random() * 2 - 1) * jitter
-    }));
-    indexed.sort((a, b) => a.sortKey - b.sortKey);
-    return indexed.map((entry) => entry.item);
-  };
   var popularityWeight = (popularity, favorObscure, steepness = 2.5) => {
     const popValue = typeof popularity === "number" && !Number.isNaN(popularity) ? popularity : 50;
     const pop = Math.max(0, Math.min(100, popValue));
@@ -197,8 +188,42 @@
     if (distance <= eraWindow * 2) return 1.1;
     return 1;
   };
+  var normalizeTempo = (tempo) => Math.max(0, Math.min(1, (tempo - 50) / 150));
+  var acousticDistance = (a, b) => {
+    const pairs = [
+      [a.tempo, b.tempo, true],
+      [a.energy, b.energy],
+      [a.valence, b.valence],
+      [a.danceability, b.danceability],
+      [a.acousticness, b.acousticness],
+      [a.instrumentalness, b.instrumentalness]
+    ];
+    const deltas = pairs.filter(([left, right]) => left != null && right != null).map(([left, right, tempo]) => {
+      const normalizedLeft = tempo ? normalizeTempo(left) : left;
+      const normalizedRight = tempo ? normalizeTempo(right) : right;
+      return (normalizedLeft - normalizedRight) ** 2;
+    });
+    return deltas.length >= 2 ? Math.sqrt(deltas.reduce((sum, value) => sum + value, 0) / deltas.length) : null;
+  };
+  var playlistAffinityWeight = (candidate, playlistTracks) => {
+    const distances = playlistTracks.map((track) => acousticDistance(candidate, track)).filter((distance) => distance != null).sort((a, b) => a - b);
+    if (distances.length === 0) return 1;
+    const nearest = distances.slice(0, Math.min(5, distances.length));
+    const meanDistance = nearest.reduce((sum, distance) => sum + distance, 0) / nearest.length;
+    return Math.exp(-2.2 * meanDistance);
+  };
+  var feedbackWeight = (candidate, feedback) => {
+    let weight = 1;
+    for (const skip of feedback) {
+      const sameArtist = candidate.artistUri && skip.artistUri && candidate.artistUri === skip.artistUri || candidate.artistName && skip.artistName && candidate.artistName === skip.artistName;
+      if (sameArtist) weight *= 0.1;
+      const distance = acousticDistance(candidate, skip.profile);
+      if (distance != null && distance <= 0.18) weight *= 0.25;
+    }
+    return Math.max(0.01, weight);
+  };
   var pickFromPool = (pool, options) => {
-    const { recentKeys, artistSpacing, albumSpacing, favorObscure, historyWeights, seedYear, eraWindow } = options;
+    const { recentKeys, artistSpacing, albumSpacing, favorObscure, historyWeights, seedYear, eraWindow, seedProfile, skipFeedback, playlistProfiles, topTrackUris } = options;
     const eligible = pool.filter(
       (candidate) => respectsArtistSpacing(candidate, recentKeys.artists, artistSpacing) && respectsAlbumSpacing(candidate, recentKeys.albums, albumSpacing)
     );
@@ -213,6 +238,11 @@
       if (seedYear != null && eraWindow != null) {
         weight *= eraAffinityWeight(candidate, seedYear, eraWindow);
       }
+      const seedDistance = seedProfile ? acousticDistance(candidate, seedProfile) : null;
+      if (seedDistance != null) weight *= Math.exp(-2.5 * seedDistance);
+      if (playlistProfiles?.length) weight *= playlistAffinityWeight(candidate, playlistProfiles);
+      if (topTrackUris?.has(candidate.uri)) weight *= 0.45;
+      if (skipFeedback?.length) weight *= feedbackWeight(candidate, skipFeedback);
       return Math.max(0.01, weight);
     });
     return pickWeightedRandom(pickPool, weights);
@@ -245,11 +275,10 @@
     const profileHistoryWeights = computeHistoryWeights(profile, sessionPlayedUris, settings.historyPenaltyWindow);
     const selected = [];
     const recentPlayed = [];
-    const pickedSet = /* @__PURE__ */ new Set();
     const albumSpacing = 2;
     while (selected.length < count && (similar.length > 0 || profile.length > 0)) {
       const recentKeys = getRecentKeys(recentPlayed, settings.artistSpacing);
-      const useSimilar = similar.length > 0 && (profile.length === 0 || Math.random() < similarWeight / (similarWeight + profileWeight));
+      const useSimilar = similar.length > 0 && (profile.length === 0 || Math.random() < similarWeight / Math.max(1e-4, similarWeight + profileWeight));
       const pool = useSimilar ? similar : profile;
       const favorObscure = settings.deprioritizePopular;
       const historyWeights = useSimilar ? similarHistoryWeights : profileHistoryWeights;
@@ -260,13 +289,14 @@
         favorObscure,
         historyWeights,
         seedYear: seed.releaseYear,
-        eraWindow: settings.eraWindow
+        eraWindow: settings.eraWindow,
+        seedProfile: seed,
+        skipFeedback: settings.skipFeedback
       });
       if (!picked) break;
       selected.push(picked);
       recentPlayed.push(picked);
       playedSet.add(picked.uri);
-      pickedSet.add(picked.uri);
       if (useSimilar) {
         similar = similar.filter((candidate) => candidate.uri !== picked.uri);
       } else {
@@ -278,7 +308,7 @@
         similar = similar.filter((candidate) => candidate.uri !== picked.uri);
       }
     }
-    return softShuffle(selected, 3);
+    return selected;
   };
   var buildSinglePoolBatch = (seed, pool, sessionPlayedUris, settings, count) => {
     const playedSet = new Set(sessionPlayedUris);
@@ -303,7 +333,9 @@
         favorObscure,
         historyWeights,
         seedYear: seed?.releaseYear,
-        eraWindow: settings.eraWindow
+        eraWindow: settings.eraWindow,
+        seedProfile: seed ?? void 0,
+        skipFeedback: settings.skipFeedback
       });
       if (!picked) {
         const fallbackPicked = pickFromPool(eligiblePool, {
@@ -313,7 +345,9 @@
           favorObscure,
           historyWeights,
           seedYear: seed?.releaseYear,
-          eraWindow: settings.eraWindow
+          eraWindow: settings.eraWindow,
+          seedProfile: seed ?? void 0,
+          skipFeedback: settings.skipFeedback
         });
         if (!fallbackPicked) break;
         selected.push(fallbackPicked);
@@ -327,7 +361,41 @@
         eligiblePool = eligiblePool.filter((track) => track.uri !== picked.uri);
       }
     }
-    return softShuffle(selected, 3);
+    return selected;
+  };
+  var buildPlaylistBatch = (playlistTracks, candidatePool, sessionPlayedUris, topTrackUris, settings, count) => {
+    const playlistUris = new Set(playlistTracks.map((track) => track.uri));
+    const playedUris = new Set(sessionPlayedUris);
+    let eligible = dedupeCandidates(filterPlayableCandidates(candidatePool)).filter(
+      (candidate) => !playlistUris.has(candidate.uri) && !playedUris.has(candidate.uri)
+    );
+    if (eligible.length === 0) {
+      const recent = new Set(sessionPlayedUris.slice(-settings.historyPenaltyWindow));
+      eligible = dedupeCandidates(filterPlayableCandidates(candidatePool)).filter(
+        (candidate) => !playlistUris.has(candidate.uri) && !recent.has(candidate.uri)
+      );
+    }
+    const historyWeights = computeHistoryWeights(eligible, sessionPlayedUris, settings.historyPenaltyWindow);
+    const topTracks = new Set(topTrackUris);
+    const selected = [];
+    const recentPlayed = [];
+    while (selected.length < count && eligible.length > 0) {
+      const picked = pickFromPool(eligible, {
+        recentKeys: getRecentKeys(recentPlayed, settings.artistSpacing),
+        artistSpacing: settings.artistSpacing,
+        albumSpacing: 2,
+        favorObscure: true,
+        historyWeights,
+        playlistProfiles: playlistTracks,
+        topTrackUris: topTracks,
+        skipFeedback: settings.skipFeedback
+      });
+      if (!picked) break;
+      selected.push(picked);
+      recentPlayed.push(picked);
+      eligible = eligible.filter((candidate) => candidate.uri !== picked.uri);
+    }
+    return selected;
   };
 
   // src/session/SessionManager.ts
@@ -345,7 +413,15 @@
     playlistTracks: [],
     topTracksBlacklist: [],
     artistUri: null,
-    artistTracks: []
+    artistTracks: [],
+    currentTrackUri: null,
+    currentProgressMs: 0,
+    currentDurationMs: 0,
+    skipped: []
+  };
+  var candidateForUri = (uri) => {
+    if (state.seed?.uri === uri) return state.seed;
+    return [...state.similarPool, ...state.profilePool, ...state.playlistTracks, ...state.artistTracks].find((candidate) => candidate.uri === uri);
   };
   var sessionManager = {
     isActive: () => state.active,
@@ -372,6 +448,7 @@
     getTopTracksBlacklist: () => state.topTracksBlacklist,
     isArtistSession: () => Boolean(state.artistUri),
     getArtistTracks: () => state.artistTracks,
+    getSkipFeedback: () => [...state.skipped],
     startSession: (seed) => {
       state.active = true;
       state.seed = seed;
@@ -385,6 +462,10 @@
       state.topTracksBlacklist = [];
       state.artistUri = null;
       state.artistTracks = [];
+      state.currentTrackUri = seed.uri;
+      state.currentProgressMs = 0;
+      state.currentDurationMs = 0;
+      state.skipped = [];
     },
     startPlaylistSession: (seed, playlistUri, playlistTracks, topTracks) => {
       state.active = true;
@@ -399,6 +480,10 @@
       state.topTracksBlacklist = topTracks;
       state.artistUri = null;
       state.artistTracks = [];
+      state.currentTrackUri = seed.uri;
+      state.currentProgressMs = 0;
+      state.currentDurationMs = 0;
+      state.skipped = [];
     },
     startArtistSession: (seed, artistUri, artistTracks) => {
       state.active = true;
@@ -413,6 +498,10 @@
       state.topTracksBlacklist = [];
       state.artistUri = artistUri;
       state.artistTracks = artistTracks;
+      state.currentTrackUri = seed.uri;
+      state.currentProgressMs = 0;
+      state.currentDurationMs = 0;
+      state.skipped = [];
     },
     endSession: () => {
       state.active = false;
@@ -428,6 +517,42 @@
       state.topTracksBlacklist = [];
       state.artistUri = null;
       state.artistTracks = [];
+      state.currentTrackUri = null;
+      state.currentProgressMs = 0;
+      state.currentDurationMs = 0;
+      state.skipped = [];
+    },
+    recordProgress: (progressMs, durationMs) => {
+      if (Number.isFinite(progressMs)) {
+        state.currentProgressMs = Math.max(state.currentProgressMs, progressMs);
+      }
+      if (Number.isFinite(durationMs) && durationMs > 0) state.currentDurationMs = durationMs;
+    },
+    transitionToTrack: (uri) => {
+      const previousUri = state.currentTrackUri;
+      const previousDurationMs = state.currentDurationMs;
+      if (previousUri && previousUri !== uri && previousDurationMs > 0) {
+        const earlySkip = state.currentProgressMs < 3e4 || state.currentProgressMs / previousDurationMs < 0.35;
+        const skippedTrack = candidateForUri(previousUri);
+        if (earlySkip && skippedTrack) {
+          state.skipped.push({
+            artistUri: skippedTrack.artistUri,
+            artistName: skippedTrack.artistName,
+            profile: {
+              tempo: skippedTrack.tempo,
+              energy: skippedTrack.energy,
+              valence: skippedTrack.valence,
+              danceability: skippedTrack.danceability,
+              acousticness: skippedTrack.acousticness,
+              instrumentalness: skippedTrack.instrumentalness
+            }
+          });
+          state.skipped = state.skipped.slice(-20);
+        }
+      }
+      state.currentTrackUri = uri;
+      state.currentProgressMs = 0;
+      state.currentDurationMs = 0;
     },
     recordTrackPlayed: (uri) => {
       if (!uri || uri === "spotify:delimiter") return;
@@ -581,7 +706,13 @@
         albumName: track?.album?.name ?? base.albumName,
         releaseYear: parseYear(track?.album?.release_date) ?? base.releaseYear,
         genres,
-        instrumentalness: features?.instrumentalness ?? void 0
+        instrumentalness: features?.instrumentalness ?? void 0,
+        popularity: track?.popularity,
+        tempo: features?.tempo,
+        energy: features?.energy,
+        valence: features?.valence,
+        danceability: features?.danceability,
+        acousticness: features?.acousticness
       });
     } catch {
       return enrichSeedMetadata(base);
@@ -840,14 +971,20 @@
   };
 
   // src/sources/similarTracks.ts
+  var featureCache = /* @__PURE__ */ new Map();
+  var metadataCache = /* @__PURE__ */ new Map();
   var enrichAudioFeaturesAndMetadata = async (candidates) => {
     if (candidates.length === 0) return candidates;
-    const ids = candidates.map((c) => getUriId(c.uri)).filter(Boolean);
     const featuresMap = /* @__PURE__ */ new Map();
+    for (const candidate of candidates) {
+      const cached = featureCache.get(candidate.uri);
+      if (cached) featuresMap.set(candidate.uri, cached);
+    }
     const featurePromises = [];
     const featureChunkSize = 100;
-    for (let i = 0; i < ids.length; i += featureChunkSize) {
-      const chunkIds = ids.slice(i, i + featureChunkSize);
+    const uncachedFeatureIds = candidates.filter((candidate) => !featureCache.has(candidate.uri)).map((candidate) => getUriId(candidate.uri)).filter(Boolean);
+    for (let i = 0; i < uncachedFeatureIds.length; i += featureChunkSize) {
+      const chunkIds = uncachedFeatureIds.slice(i, i + featureChunkSize);
       featurePromises.push(
         (async () => {
           try {
@@ -857,9 +994,17 @@
             const audioFeatures = res?.audio_features ?? [];
             for (const feat of audioFeatures) {
               if (feat?.id) {
-                featuresMap.set(`spotify:track:${feat.id}`, {
-                  instrumentalness: feat.instrumentalness
-                });
+                const uri = `spotify:track:${feat.id}`;
+                const cached = {
+                  instrumentalness: feat.instrumentalness,
+                  tempo: feat.tempo,
+                  energy: feat.energy,
+                  valence: feat.valence,
+                  danceability: feat.danceability,
+                  acousticness: feat.acousticness
+                };
+                featuresMap.set(uri, cached);
+                featureCache.set(uri, cached);
               }
             }
           } catch (error) {
@@ -869,9 +1014,15 @@
       );
     }
     const metadataMap = /* @__PURE__ */ new Map();
+    for (const candidate of candidates) {
+      const cached = metadataCache.get(candidate.uri);
+      if (cached) metadataMap.set(candidate.uri, cached);
+    }
     const metadataPromises = [];
     const metadataChunkSize = 50;
-    const needsMetadata = candidates.filter((c) => !c.albumName || !c.trackName || c.popularity === void 0);
+    const needsMetadata = candidates.filter(
+      (c) => !metadataCache.has(c.uri) && (!c.albumName || !c.trackName || c.popularity === void 0 || !c.albumUri || c.releaseYear === void 0)
+    );
     const needsMetadataIds = needsMetadata.map((c) => getUriId(c.uri)).filter(Boolean);
     for (let i = 0; i < needsMetadataIds.length; i += metadataChunkSize) {
       const chunkIds = needsMetadataIds.slice(i, i + metadataChunkSize);
@@ -884,11 +1035,16 @@
             const tracks = res?.tracks ?? [];
             for (const track of tracks) {
               if (track?.id) {
-                metadataMap.set(`spotify:track:${track.id}`, {
+                const uri = `spotify:track:${track.id}`;
+                const cached = {
+                  albumUri: track.album?.uri,
                   albumName: track.album?.name,
                   trackName: track.name,
-                  popularity: track.popularity
-                });
+                  popularity: track.popularity,
+                  releaseYear: Number.parseInt(track.album?.release_date?.slice(0, 4), 10) || void 0
+                };
+                metadataMap.set(uri, cached);
+                metadataCache.set(uri, cached);
               }
             }
           } catch (error) {
@@ -904,12 +1060,20 @@
       return {
         ...candidate,
         instrumentalness: feat?.instrumentalness ?? candidate.instrumentalness,
+        tempo: feat?.tempo ?? candidate.tempo,
+        energy: feat?.energy ?? candidate.energy,
+        valence: feat?.valence ?? candidate.valence,
+        danceability: feat?.danceability ?? candidate.danceability,
+        acousticness: feat?.acousticness ?? candidate.acousticness,
         albumName: meta?.albumName ?? candidate.albumName,
+        albumUri: meta?.albumUri ?? candidate.albumUri,
         trackName: meta?.trackName ?? candidate.trackName,
-        popularity: meta?.popularity ?? candidate.popularity
+        popularity: meta?.popularity ?? candidate.popularity,
+        releaseYear: meta?.releaseYear ?? candidate.releaseYear
       };
     });
   };
+  var enrichPlaylistTracks = async (tracks) => enrichAudioFeaturesAndMetadata(tracks);
   var filterInstrumentalsAndSoundtracks = (candidates, isVocal, isSoundtrack) => {
     return candidates.filter((candidate) => {
       if (isVocal && candidate.instrumentalness !== void 0 && candidate.instrumentalness > 0.5) {
@@ -1183,8 +1347,12 @@
   };
   var fetchPlaylistSimilarPool = async (playlistTracks, settings, seedCount = 3) => {
     if (playlistTracks.length === 0) return [];
-    const playlistUriSet = new Set(playlistTracks.map((t) => t.uri));
-    const seeds = sampleSpread(playlistTracks, Math.min(seedCount, playlistTracks.length));
+    const enrichedPlaylistTracks = await enrichAudioFeaturesAndMetadata(playlistTracks);
+    const playlistUriSet = new Set(enrichedPlaylistTracks.map((t) => t.uri));
+    const seeds = sampleSpread(
+      enrichedPlaylistTracks,
+      Math.min(seedCount, enrichedPlaylistTracks.length)
+    );
     const seedMetadatas = await Promise.all(
       seeds.map((s) => buildSeedMetadataFromCandidate(s))
     );
@@ -1770,8 +1938,12 @@
   };
 
   // src/services/shuffleEngine.ts
+  var getSessionConfig = (seed) => ({
+    ...getSmartConfig(seed),
+    skipFeedback: sessionManager.getSkipFeedback()
+  });
   var ensurePools = async (seed, forceRefresh = false) => {
-    const settings = getSmartConfig(seed);
+    const settings = getSessionConfig(seed);
     let similar = forceRefresh ? [] : sessionManager.getSimilarPool();
     let profile = forceRefresh ? [] : sessionManager.getProfilePool();
     if (similar.length === 0) {
@@ -1784,30 +1956,29 @@
     return { similar, profile, settings };
   };
   var buildPlaylistPlayableBatch = async () => {
-    const playlistTracks = sessionManager.getPlaylistTracks();
+    const playlistTracks = await enrichPlaylistTracks(sessionManager.getPlaylistTracks());
     if (playlistTracks.length === 0) {
       throw new Error("Playlist has no tracks.");
     }
     const seed = sessionManager.getSeed();
-    const settings = getSmartConfig(seed);
+    const settings = getSessionConfig(seed);
     const playedUris = sessionManager.getPlayedUris();
     const queuedUris = sessionManager.getQueuedUris();
     const upcomingQueueUris = getUpcomingQueueUris();
     const excludeUris = [.../* @__PURE__ */ new Set([...playedUris, ...queuedUris, ...upcomingQueueUris])];
-    const similarPool = await fetchPlaylistSimilarPool(playlistTracks, settings, 3);
-    let batch = buildTrackBatch(
-      seed,
-      sessionManager.getPosition(),
-      excludeUris,
-      similarPool,
+    const similarPool = await fetchPlaylistSimilarPool(playlistTracks, settings, 5);
+    let batch = buildPlaylistBatch(
       playlistTracks,
+      similarPool,
+      excludeUris,
+      sessionManager.getTopTracksBlacklist(),
       settings,
       settings.initialQueueSize
     );
     if (batch.length === 0) {
       batch = buildSinglePoolBatch(
         seed,
-        playlistTracks,
+        similarPool,
         excludeUris,
         settings,
         settings.initialQueueSize
@@ -1818,7 +1989,7 @@
     }
     const playableQueueUris = await filterPlayableUris(batch.map((track) => track.uri));
     const queueUris = playableQueueUris.length > 0 ? playableQueueUris : batch.map((track) => track.uri);
-    return { playableQueueUris: queueUris, settings, similarCount: playlistTracks.length, profileCount: 0 };
+    return { playableQueueUris: queueUris, settings, similarCount: similarPool.length, profileCount: playlistTracks.length };
   };
   var buildArtistPlayableBatch = async () => {
     const artistTracks = sessionManager.getArtistTracks();
@@ -1826,7 +1997,7 @@
       throw new Error("Artist has no tracks.");
     }
     const seed = sessionManager.getSeed();
-    const settings = getSmartConfig(seed);
+    const settings = getSessionConfig(seed);
     const playedUris = sessionManager.getPlayedUris();
     const queuedUris = sessionManager.getQueuedUris();
     const upcomingQueueUris = getUpcomingQueueUris();
@@ -1920,12 +2091,19 @@
     } else {
       sessionManager.startSession(seed);
     }
-    enableAutoplayGuard();
-    enforceNativeShuffleOff();
+    if (!options.buildOnly) {
+      enableAutoplayGuard();
+      enforceNativeShuffleOff();
+    }
     const { playableQueueUris, settings, similarCount } = await buildPlayableBatch(
       seed,
       options.forceRefreshPools ?? true
     );
+    const result = {
+      seed,
+      queueUris: playableQueueUris.filter((uri) => uri !== seed.uri)
+    };
+    if (options.buildOnly) return result;
     const currentUri = Spicetify.Player.data?.item?.uri;
     if (options.replaceUpcoming && currentUri) {
       const upcoming = playableQueueUris.filter(
@@ -1953,12 +2131,19 @@
     Spicetify.showNotification(
       formatSuccessMessage(playableQueueUris.length, sessionManager.getPosition(), settings, similarCount)
     );
+    return result;
   };
   var startFromContextMenu = async (seedUri, contextUri) => {
-    await startShuffleSimilar(seedUri, contextUri, {
+    return await startShuffleSimilar(seedUri, contextUri, {
       forceRefreshPools: true,
       playSeed: true,
       replaceUpcoming: false
+    });
+  };
+  var buildFromContextMenu = async (seedUri, contextUri) => {
+    return await startShuffleSimilar(seedUri, contextUri, {
+      forceRefreshPools: true,
+      buildOnly: true
     });
   };
   var reshuffleFromCurrentTrack = async () => {
@@ -1982,7 +2167,7 @@
     if (!sessionManager.isActive() || sessionManager.isRefilling()) return;
     const seed = sessionManager.getSeed();
     if (!seed) return;
-    const settings = getSmartConfig(seed);
+    const settings = getSessionConfig(seed);
     const upcoming = getUpcomingCount();
     if (upcoming >= settings.refillThreshold) return;
     sessionManager.setRefilling(true);
@@ -2012,6 +2197,7 @@
     if (!uri) return;
     if (!sessionManager.isToggleEnabled() || !sessionManager.isActive()) return;
     enforceNativeShuffleOff();
+    sessionManager.transitionToTrack(uri);
     sessionManager.recordTrackPlayed(uri);
     await refillQueueIfNeeded();
   };
@@ -2025,6 +2211,46 @@
     syncHandler?.();
   };
 
+  // src/services/playlistService.ts
+  var PLAYLIST_TRACK_LIMIT = 100;
+  var uniqueTrackUris = (uris) => [
+    ...new Set(uris.filter((uri) => uri.startsWith("spotify:track:")))
+  ];
+  var playlistNameForSeed = (trackName, artistName) => {
+    const seedLabel = trackName || artistName || "My Mix";
+    return `Similar to - ${seedLabel}`.slice(0, 100);
+  };
+  var createSimilarPlaylist = async (trackName, artistName, uris) => {
+    const trackUris = uniqueTrackUris(uris);
+    if (trackUris.length === 0) {
+      throw new Error("No tracks were available to save.");
+    }
+    const platform = Spicetify.Platform;
+    const rootlistApi = platform.RootlistAPI;
+    const playlistApi = platform.PlaylistAPI;
+    if (!rootlistApi?.createPlaylist || !playlistApi?.add) {
+      throw new Error("Spotify's playlist tools are not available. Restart Spotify and try again.");
+    }
+    const created = await rootlistApi.createPlaylist(playlistNameForSeed(trackName, artistName), {
+      before: "start"
+    });
+    const playlistUri = typeof created === "string" ? created : created?.uri;
+    if (!playlistUri?.startsWith("spotify:playlist:")) {
+      throw new Error("Spotify could not create the playlist.");
+    }
+    for (let offset = 0; offset < trackUris.length; offset += PLAYLIST_TRACK_LIMIT) {
+      await playlistApi.add(
+        playlistUri,
+        trackUris.slice(offset, offset + PLAYLIST_TRACK_LIMIT),
+        { before: "start" }
+      );
+    }
+    return {
+      uri: playlistUri,
+      trackCount: trackUris.length
+    };
+  };
+
   // src/ui/contextMenu.ts
   var contextMenuRegistered = false;
   var runPlayWithShuffleSimilar = (uris) => {
@@ -2034,6 +2260,18 @@
         console.error("[Shuffle Similar]", error);
         Spicetify.showNotification(
           error instanceof Error ? error.message : "Shuffle Similar failed",
+          true
+        );
+      });
+    }, 100);
+  };
+  var runCreateSimilarPlaylist = (uris) => {
+    Spicetify.showNotification("Building Shuffle Similar playlist...");
+    setTimeout(() => {
+      handleCreateSimilarPlaylist(uris).catch((error) => {
+        console.error("[Shuffle Similar] Could not create playlist", error);
+        Spicetify.showNotification(
+          error instanceof Error ? error.message : "Could not create similar playlist",
           true
         );
       });
@@ -2094,6 +2332,30 @@
     await startFromContextMenu(seedUri, contextUri);
     syncShuffleSimilarFromPlayback();
   };
+  var handleCreateSimilarPlaylist = async (uris) => {
+    const seedUri = await pickSeedFromCollection(uris);
+    if (!seedUri) {
+      Spicetify.showNotification("Nothing to add to a playlist", true);
+      return;
+    }
+    const contextUri = uris.length === 1 && isValidPlaybackContext(uris[0]) ? uris[0] : null;
+    const { seed, queueUris } = await buildFromContextMenu(seedUri, contextUri);
+    let playlist;
+    try {
+      playlist = await createSimilarPlaylist(
+        seed.trackName,
+        seed.artistName,
+        [seed.uri, ...queueUris]
+      );
+    } finally {
+      sessionManager.endSession();
+      syncShuffleSimilarFromPlayback();
+    }
+    await Spicetify.Player.playUri(playlist.uri);
+    Spicetify.showNotification(
+      `Playing Similar playlist with ${playlist.trackCount} songs`
+    );
+  };
   var registerContextMenu = () => {
     if (contextMenuRegistered) return;
     if (!Spicetify.ContextMenu?.Item) {
@@ -2106,10 +2368,22 @@
       "enhance"
     ).register();
     new Spicetify.ContextMenu.Item(
+      "Create Similar Playlist",
+      runCreateSimilarPlaylist,
+      isNonPlaylist,
+      "playlist"
+    ).register();
+    new Spicetify.ContextMenu.Item(
       "Shuffle Similar",
       runPlayWithShuffleSimilar,
       isPlaylistOnly,
       "enhance"
+    ).register();
+    new Spicetify.ContextMenu.Item(
+      "Create Similar Playlist",
+      runCreateSimilarPlaylist,
+      isPlaylistOnly,
+      "playlist"
     ).register();
     contextMenuRegistered = true;
     console.info("[Shuffle Similar] Context menus registered");
@@ -2547,6 +2821,14 @@
         }
         updateNativeShuffleGuard();
         void handleSongChange();
+      });
+      Spicetify.Player.addEventListener("onprogress", () => {
+        if (sessionManager.isActive()) {
+          sessionManager.recordProgress(
+            Spicetify.Player.getProgress(),
+            Spicetify.Player.getDuration()
+          );
+        }
       });
       setTimeout(initializePlaybarFeatures, PLAYBAR_INIT_DELAY_MS);
       console.info("[Shuffle Similar] Extension initialized");

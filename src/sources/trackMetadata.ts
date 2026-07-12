@@ -78,6 +78,12 @@ export const fetchSeedMetadata = async (uri: string): Promise<SeedMetadata> => {
       releaseYear: parseYear(track?.album?.release_date) ?? base.releaseYear,
       genres,
       instrumentalness: features?.instrumentalness ?? undefined,
+      popularity: track?.popularity,
+      tempo: features?.tempo,
+      energy: features?.energy,
+      valence: features?.valence,
+      danceability: features?.danceability,
+      acousticness: features?.acousticness,
     })
   } catch {
     return enrichSeedMetadata(base)

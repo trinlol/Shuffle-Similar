@@ -1,4 +1,4 @@
-import type { TrackCandidate } from "../session/types"
+import type { AcousticProfile, SkipFeedback, TrackCandidate } from "../session/types"
 import { loadPlayHistory } from "../storage/settings"
 import { pickWeightedRandom, popularityWeight } from "./shuffle"
 
@@ -170,6 +170,58 @@ export type PickFromPoolOptions = {
   historyWeights?: Map<string, number>
   seedYear?: number
   eraWindow?: number
+  seedProfile?: AcousticProfile
+  skipFeedback?: SkipFeedback[]
+  playlistProfiles?: TrackCandidate[]
+  topTrackUris?: Set<string>
+}
+
+export const normalizeTempo = (tempo: number): number =>
+  Math.max(0, Math.min(1, (tempo - 50) / 150))
+
+export const acousticDistance = (a: AcousticProfile, b: AcousticProfile): number | null => {
+  const pairs: Array<[number | undefined, number | undefined, boolean?]> = [
+    [a.tempo, b.tempo, true], [a.energy, b.energy], [a.valence, b.valence],
+    [a.danceability, b.danceability], [a.acousticness, b.acousticness],
+    [a.instrumentalness, b.instrumentalness],
+  ]
+  const deltas = pairs.filter(([left, right]) => left != null && right != null).map(([left, right, tempo]) => {
+    const normalizedLeft = tempo ? normalizeTempo(left!) : left!
+    const normalizedRight = tempo ? normalizeTempo(right!) : right!
+    return (normalizedLeft - normalizedRight) ** 2
+  })
+  return deltas.length >= 2
+    ? Math.sqrt(deltas.reduce((sum, value) => sum + value, 0) / deltas.length)
+    : null
+}
+
+/** Score a candidate against the nearest few tracks across the whole playlist. */
+export const playlistAffinityWeight = (
+  candidate: TrackCandidate,
+  playlistTracks: TrackCandidate[]
+): number => {
+  const distances = playlistTracks
+    .map((track) => acousticDistance(candidate, track))
+    .filter((distance): distance is number => distance != null)
+    .sort((a, b) => a - b)
+
+  if (distances.length === 0) return 1
+  const nearest = distances.slice(0, Math.min(5, distances.length))
+  const meanDistance = nearest.reduce((sum, distance) => sum + distance, 0) / nearest.length
+  return Math.exp(-2.2 * meanDistance)
+}
+
+export const feedbackWeight = (candidate: TrackCandidate, feedback: SkipFeedback[]): number => {
+  let weight = 1
+  for (const skip of feedback) {
+    const sameArtist =
+      (candidate.artistUri && skip.artistUri && candidate.artistUri === skip.artistUri) ||
+      (candidate.artistName && skip.artistName && candidate.artistName === skip.artistName)
+    if (sameArtist) weight *= 0.1
+    const distance = acousticDistance(candidate, skip.profile)
+    if (distance != null && distance <= 0.18) weight *= 0.25
+  }
+  return Math.max(0.01, weight)
 }
 
 /**
@@ -181,7 +233,7 @@ export const pickFromPool = (
   pool: TrackCandidate[],
   options: PickFromPoolOptions
 ): TrackCandidate | null => {
-  const { recentKeys, artistSpacing, albumSpacing, favorObscure, historyWeights, seedYear, eraWindow } = options
+  const { recentKeys, artistSpacing, albumSpacing, favorObscure, historyWeights, seedYear, eraWindow, seedProfile, skipFeedback, playlistProfiles, topTrackUris } = options
 
   // Filter for spacing — prefer candidates that respect both artist and album spacing
   const eligible = pool.filter(
@@ -211,6 +263,12 @@ export const pickFromPool = (
     if (seedYear != null && eraWindow != null) {
       weight *= eraAffinityWeight(candidate, seedYear, eraWindow)
     }
+
+    const seedDistance = seedProfile ? acousticDistance(candidate, seedProfile) : null
+    if (seedDistance != null) weight *= Math.exp(-2.5 * seedDistance)
+    if (playlistProfiles?.length) weight *= playlistAffinityWeight(candidate, playlistProfiles)
+    if (topTrackUris?.has(candidate.uri)) weight *= 0.45
+    if (skipFeedback?.length) weight *= feedbackWeight(candidate, skipFeedback)
 
     return Math.max(0.01, weight)
   })
