@@ -2,8 +2,6 @@
 
 Play songs similar to your selected song, playlist, album, or artist using radio, inspired-by, genre, era, and related-artist sources. Shuffle Similar learns automatically from early skips and can either manage your queue or create a permanent playlist from its recommendations.
 
-![Spicetify Shuffle Similar](preview-banner.png)
-
 ## Install
 
 ### Marketplace (recommended)
