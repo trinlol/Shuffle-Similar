@@ -18,7 +18,10 @@ const uniqueTrackUris = (uris: string[]): string[] => [
 ]
 
 const playlistNameForSeed = (trackName: string, artistName: string): string => {
-  const seedLabel = trackName || artistName || "My Mix"
+  const seedLabel = trackName.trim()
+  if (!seedLabel) {
+    throw new Error("Spotify could not load the selected song name. Please try again.")
+  }
   return `Similar to - ${seedLabel}`.slice(0, 100)
 }
 

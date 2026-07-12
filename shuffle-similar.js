@@ -668,6 +668,22 @@
       return [];
     }
   };
+  var fetchTrackDetails = async (trackId) => {
+    try {
+      return await Spicetify.CosmosAsync.get(
+        `https://api.spotify.com/v1/tracks/${trackId}?market=${getMarket()}`
+      );
+    } catch {
+      const query = encodeURIComponent(`spotify:track:${trackId}`);
+      const response = await Spicetify.CosmosAsync.get(
+        `https://api.spotify.com/v1/search?q=${query}&type=track&limit=10&market=${getMarket()}`
+      ).catch(() => null);
+      const tracks = response?.tracks?.items ?? [];
+      return tracks.find(
+        (track) => track?.id === trackId || track?.uri === `spotify:track:${trackId}`
+      ) ?? null;
+    }
+  };
   var getSeedMetadataFromPlayer = (uri) => {
     const currentUri = Spicetify.Player.data?.item?.uri;
     const metadata = currentUri === uri ? Spicetify.Player.data?.item?.metadata ?? {} : {};
@@ -687,9 +703,8 @@
   var fetchSeedMetadata = async (uri) => {
     const base = getSeedMetadataFromPlayer(uri);
     try {
-      const track = await Spicetify.CosmosAsync.get(
-        `https://api.spotify.com/v1/tracks/${base.trackId}?market=${getMarket()}`
-      );
+      const track = await fetchTrackDetails(base.trackId);
+      if (!track) return enrichSeedMetadata(base);
       const artist = track?.artists?.[0];
       const artistId = artist?.id ?? getUriId(artist?.uri ?? "");
       const genres = artistId ? await fetchArtistGenres(artistId) : [];
@@ -2217,7 +2232,10 @@
     ...new Set(uris.filter((uri) => uri.startsWith("spotify:track:")))
   ];
   var playlistNameForSeed = (trackName, artistName) => {
-    const seedLabel = trackName || artistName || "My Mix";
+    const seedLabel = trackName.trim();
+    if (!seedLabel) {
+      throw new Error("Spotify could not load the selected song name. Please try again.");
+    }
     return `Similar to - ${seedLabel}`.slice(0, 100);
   };
   var createSimilarPlaylist = async (trackName, artistName, uris) => {

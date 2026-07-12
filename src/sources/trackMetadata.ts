@@ -34,6 +34,24 @@ const fetchArtistGenres = async (artistId: string): Promise<string[]> => {
   }
 }
 
+const fetchTrackDetails = async (trackId: string) => {
+  try {
+    return await Spicetify.CosmosAsync.get(
+      `https://api.spotify.com/v1/tracks/${trackId}?market=${getMarket()}`
+    )
+  } catch {
+    const query = encodeURIComponent(`spotify:track:${trackId}`)
+    const response = await Spicetify.CosmosAsync.get(
+      `https://api.spotify.com/v1/search?q=${query}&type=track&limit=10&market=${getMarket()}`
+    ).catch(() => null)
+    const tracks = response?.tracks?.items ?? []
+    return tracks.find(
+      (track: { id?: string; uri?: string }) =>
+        track?.id === trackId || track?.uri === `spotify:track:${trackId}`
+    ) ?? null
+  }
+}
+
 export const getSeedMetadataFromPlayer = (uri: string): SeedMetadata => {
   const currentUri = Spicetify.Player.data?.item?.uri
   const metadata =
@@ -57,9 +75,8 @@ export const fetchSeedMetadata = async (uri: string): Promise<SeedMetadata> => {
   const base = getSeedMetadataFromPlayer(uri)
 
   try {
-    const track = await Spicetify.CosmosAsync.get(
-      `https://api.spotify.com/v1/tracks/${base.trackId}?market=${getMarket()}`
-    )
+    const track = await fetchTrackDetails(base.trackId)
+    if (!track) return enrichSeedMetadata(base)
     const artist = track?.artists?.[0]
     const artistId = artist?.id ?? getUriId(artist?.uri ?? "")
     const genres = artistId ? await fetchArtistGenres(artistId) : []
