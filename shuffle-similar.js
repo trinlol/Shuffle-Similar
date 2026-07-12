@@ -1,6 +1,6 @@
 // NAME: Shuffle Similar
 // DESCRIPTION: Play songs similar to your seed, with automatic learning and playlist creation
-// VERSION: 1.8.1
+// VERSION: 1.8.2
 // AUTHORS: Shuffle Similar Contributors
 
 "use strict";

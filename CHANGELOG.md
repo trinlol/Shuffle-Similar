@@ -2,6 +2,13 @@
 
 All notable changes to Shuffle Similar are documented in this file.
 
+## [1.8.2] - 2026-07-12
+
+### Fixed
+
+- Playlist names now retry exact-track metadata through Spotify search when the selected song is not currently playing or the direct lookup fails
+- Unresolved song titles now show a clear error instead of creating a misleading `Similar to - My Mix` playlist
+
 ## [1.8.1] - 2026-07-12
 
 ### Fixed
