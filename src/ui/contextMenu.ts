@@ -122,6 +122,7 @@ const handleCreateSimilarPlaylist = async (uris: string[]) => {
     )
   } finally {
     sessionManager.endSession()
+    sessionManager.setToggleEnabled(false)
     syncShuffleSimilarFromPlayback()
   }
 

@@ -1,6 +1,6 @@
 // NAME: Shuffle Similar
 // DESCRIPTION: Play songs similar to your seed, with automatic learning and playlist creation
-// VERSION: 1.8.0
+// VERSION: 1.8.1
 // AUTHORS: Shuffle Similar Contributors
 
 "use strict";
@@ -2349,6 +2349,7 @@
       );
     } finally {
       sessionManager.endSession();
+      sessionManager.setToggleEnabled(false);
       syncShuffleSimilarFromPlayback();
     }
     await Spicetify.Player.playUri(playlist.uri);
@@ -2759,9 +2760,12 @@
     }
   };
   var syncUiFromPlayback = () => {
-    sessionManager.setToggleEnabled(true);
-    enforceNativeShuffleOff();
-    enableAutoplayGuard();
+    if (sessionManager.isToggleEnabled()) {
+      enforceNativeShuffleOff();
+      enableAutoplayGuard();
+    } else {
+      disableAutoplayGuard();
+    }
     updateNativeShuffleGuard();
     ensureButtonInDom();
     syncButtonFromSession();

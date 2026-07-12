@@ -406,9 +406,12 @@ const disableShuffleSimilar = async () => {
 }
 
 const syncUiFromPlayback = () => {
-  sessionManager.setToggleEnabled(true)
-  enforceNativeShuffleOff()
-  enableAutoplayGuard()
+  if (sessionManager.isToggleEnabled()) {
+    enforceNativeShuffleOff()
+    enableAutoplayGuard()
+  } else {
+    disableAutoplayGuard()
+  }
   updateNativeShuffleGuard()
   ensureButtonInDom()
   syncButtonFromSession()

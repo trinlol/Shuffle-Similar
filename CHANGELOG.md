@@ -2,6 +2,12 @@
 
 All notable changes to Shuffle Similar are documented in this file.
 
+## [1.8.1] - 2026-07-12
+
+### Fixed
+
+- Creating and playing a similar playlist now leaves Shuffle Similar and its native-shuffle guard visibly disabled
+
 ## [1.8.0] - 2026-07-12
 
 ### Added
