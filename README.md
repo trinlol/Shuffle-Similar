@@ -39,6 +39,12 @@ spicetify apply
 - True shuffle with artist spacing, acoustic matching, and recent-play deprioritization
 - Settings for era window, queue size, refill threshold, and more
 
+## Two ways to use it
+
+<p align="center">
+  <img src="assets/shuffle-similar-workflow.png" alt="A selected song can start a Shuffle Similar automatic queue or create and play a saved similar-song playlist" width="820">
+</p>
+
 ## Usage
 
 1. Right-click a track, album, playlist, or artist and choose **Shuffle Similar**
