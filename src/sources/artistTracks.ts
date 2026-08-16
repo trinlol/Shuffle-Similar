@@ -1,6 +1,12 @@
 import type { TrackCandidate } from "../session/types"
 import { getMarket } from "../utils/playability"
 import { getUriId } from "../utils/uri"
+import { attachSourceProvenance, mergeCandidatesWithProvenance } from "./provenance"
+import { runWithTimeout } from "./spotifyApiAdapter"
+
+const SOURCE_TIMEOUT_MS = 6_000
+const MAX_DISCOGRAPHY_ALBUMS = 12
+const ALBUM_CONCURRENCY = 3
 
 const parseYear = (value: unknown): number | undefined => {
   if (typeof value === "number" && Number.isFinite(value)) return value
@@ -14,11 +20,15 @@ const parseYear = (value: unknown): number | undefined => {
 export const fetchAlbumTracks = async (albumUri: string): Promise<TrackCandidate[]> => {
   try {
     const { queryAlbumTracks } = Spicetify.GraphQL.Definitions
-    const { data } = await Spicetify.GraphQL.Request(queryAlbumTracks, {
-      uri: albumUri,
-      offset: 0,
-      limit: 100,
-    })
+    const { data } = await runWithTimeout(
+      () =>
+        Spicetify.GraphQL.Request(queryAlbumTracks, {
+          uri: albumUri,
+          offset: 0,
+          limit: 100,
+        }),
+      SOURCE_TIMEOUT_MS
+    )
 
     const album = data?.albumUnion
     const items = (album?.tracksV2 ?? album?.tracks ?? []).items ?? []
@@ -27,21 +37,43 @@ export const fetchAlbumTracks = async (albumUri: string): Promise<TrackCandidate
     return items
       .map((item: any) => {
         const track = item?.track
-        if (!track?.uri) return null
-        return {
-          uri: track.uri,
-          artistUri: track.artists?.items?.[0]?.uri,
-          artistName: track.artists?.items?.[0]?.profile?.name,
-          albumUri,
-          popularity: track.popularity ?? album?.popularity ?? 50,
-          releaseYear,
-        }
+        if (!track?.uri || track.playability?.playable === false) return null
+        return attachSourceProvenance(
+          {
+            uri: track.uri,
+            artistUri: track.artists?.items?.[0]?.uri,
+            artistName: track.artists?.items?.[0]?.profile?.name,
+            albumUri,
+            albumName: album?.name,
+            popularity: track.popularity ?? album?.popularity,
+            releaseYear,
+          },
+          "album-graphql"
+        )
       })
       .filter((candidate: any): candidate is TrackCandidate => Boolean(candidate))
-  } catch (error) {
-    console.warn("[Shuffle Similar] Failed to fetch album tracks", error)
+  } catch {
     return []
   }
+}
+
+const mapWithConcurrency = async <Input, Output>(
+  items: readonly Input[],
+  concurrency: number,
+  mapper: (item: Input) => Promise<Output>
+): Promise<Output[]> => {
+  const results = new Array<Output>(items.length)
+  let nextIndex = 0
+  const worker = async (): Promise<void> => {
+    while (nextIndex < items.length) {
+      const index = nextIndex
+      nextIndex += 1
+      results[index] = await mapper(items[index])
+    }
+  }
+  const workerCount = Math.min(Math.max(1, concurrency), items.length)
+  await Promise.all(Array.from({ length: workerCount }, () => worker()))
+  return results
 }
 
 export const fetchArtistDiscographyTracks = async (artistUri: string): Promise<TrackCandidate[]> => {
@@ -50,53 +82,31 @@ export const fetchArtistDiscographyTracks = async (artistUri: string): Promise<T
 
   try {
     const market = getMarket()
-    // Fetch albums and singles
-    const res = await Spicetify.CosmosAsync.get(
-      `https://api.spotify.com/v1/artists/${artistId}/albums?include_groups=album,single&limit=50&market=${market}`
+    const res = await runWithTimeout(
+      () =>
+        Spicetify.CosmosAsync.get(
+          `https://api.spotify.com/v1/artists/${artistId}/albums?include_groups=album,single&limit=50&market=${market}`
+        ),
+      SOURCE_TIMEOUT_MS
     )
 
-    const albums = res?.items ?? []
+    const albums = (res?.items ?? []) as Array<{ id?: string; uri?: string }>
     if (albums.length === 0) return []
 
-    const albumIds = albums.map((item: any) => item.id).filter(Boolean)
-    const candidates: TrackCandidate[] = []
-
-    // Fetch album tracks in chunks of 20
-    const chunkSize = 20
-    for (let i = 0; i < albumIds.length; i += chunkSize) {
-      const chunk = albumIds.slice(i, i + chunkSize)
-      const chunkRes = await Spicetify.CosmosAsync.get(
-        `https://api.spotify.com/v1/albums?ids=${chunk.join(",")}&market=${market}`
-      )
-
-      const fullAlbums = chunkRes?.albums ?? []
-      for (const album of fullAlbums) {
-        if (!album) continue
-        const releaseYear = parseYear(album.release_date)
-        const tracks = album.tracks?.items ?? []
-        for (const track of tracks) {
-          if (!track?.uri) continue
-          candidates.push({
-            uri: track.uri,
-            artistUri: `spotify:artist:${artistId}`,
-            artistName: track.artists?.[0]?.name ?? album.artists?.[0]?.name,
-            albumUri: album.uri,
-            popularity: album.popularity ?? 50,
-            releaseYear,
-          })
-        }
-      }
-    }
-
-    // Deduplicate by track URI
-    const seen = new Set<string>()
-    return candidates.filter((c) => {
-      if (seen.has(c.uri)) return false
-      seen.add(c.uri)
-      return true
-    })
-  } catch (error) {
-    console.warn("[Shuffle Similar] Failed to fetch artist discography tracks", error)
+    const albumUris = [...new Set(
+      albums
+        .map((album) => album.uri ?? (album.id ? `spotify:album:${album.id}` : ""))
+        .filter(Boolean)
+    )].slice(0, MAX_DISCOGRAPHY_ALBUMS)
+    const albumTracks = await mapWithConcurrency(
+      albumUris,
+      ALBUM_CONCURRENCY,
+      (albumUri) => fetchAlbumTracks(albumUri)
+    )
+    return mergeCandidatesWithProvenance(albumTracks.flat()).map((candidate) =>
+      attachSourceProvenance(candidate, "artist-discography")
+    )
+  } catch {
     return []
   }
 }

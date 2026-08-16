@@ -1,6 +1,10 @@
 import type { SeedMetadata, TrackCandidate } from "../session/types"
 import { getMarket, isWebApiTrackPlayable } from "../utils/playability"
 import { getUriId } from "../utils/uri"
+import { attachSourceProvenance } from "./provenance"
+import { optionalSpotifyCapabilities, runWithTimeout } from "./spotifyApiAdapter"
+
+const SOURCE_TIMEOUT_MS = 6_000
 
 const parseYear = (value: unknown): number | undefined => {
   if (typeof value === "number" && Number.isFinite(value)) return value
@@ -11,22 +15,31 @@ const parseYear = (value: unknown): number | undefined => {
   return undefined
 }
 
-export const candidateFromUri = (uri: string, metadata?: Record<string, string>): TrackCandidate => ({
-  uri,
-  artistUri: metadata?.artist_uri ?? metadata?.["artist_uri:1"],
-  artistName: metadata?.artist_name ?? metadata?.["artist_name:1"],
-  albumUri: metadata?.album_uri,
-  albumName: metadata?.album_title ?? metadata?.album_name,
-  trackName: metadata?.title ?? metadata?.name ?? metadata?.track_name,
-  popularity: metadata?.popularity ? Number(metadata.popularity) : undefined,
-  releaseYear: metadata?.release_year ? Number(metadata.release_year) : undefined,
-})
+export const candidateFromUri = (
+  uri: string,
+  metadata?: Record<string, string>,
+  sourceId = "platform"
+): TrackCandidate =>
+  attachSourceProvenance(
+    {
+      uri,
+      artistUri: metadata?.artist_uri ?? metadata?.["artist_uri:1"],
+      artistName: metadata?.artist_name ?? metadata?.["artist_name:1"],
+      albumUri: metadata?.album_uri,
+      albumName: metadata?.album_title ?? metadata?.album_name,
+      trackName: metadata?.title ?? metadata?.name ?? metadata?.track_name,
+      popularity: metadata?.popularity ? Number(metadata.popularity) : undefined,
+      releaseYear: metadata?.release_year ? Number(metadata.release_year) : undefined,
+    },
+    sourceId
+  )
 
 const fetchArtistGenres = async (artistId: string): Promise<string[]> => {
   if (!artistId) return []
   try {
-    const artist = await Spicetify.CosmosAsync.get(
-      `https://api.spotify.com/v1/artists/${artistId}`
+    const artist = await runWithTimeout(
+      () => Spicetify.CosmosAsync.get(`https://api.spotify.com/v1/artists/${artistId}`),
+      SOURCE_TIMEOUT_MS
     )
     return (artist?.genres ?? []).filter((genre: string) => typeof genre === "string")
   } catch {
@@ -36,13 +49,21 @@ const fetchArtistGenres = async (artistId: string): Promise<string[]> => {
 
 const fetchTrackDetails = async (trackId: string) => {
   try {
-    return await Spicetify.CosmosAsync.get(
-      `https://api.spotify.com/v1/tracks/${trackId}?market=${getMarket()}`
+    return await runWithTimeout(
+      () =>
+        Spicetify.CosmosAsync.get(
+          `https://api.spotify.com/v1/tracks/${trackId}?market=${getMarket()}`
+        ),
+      SOURCE_TIMEOUT_MS
     )
   } catch {
     const query = encodeURIComponent(`spotify:track:${trackId}`)
-    const response = await Spicetify.CosmosAsync.get(
-      `https://api.spotify.com/v1/search?q=${query}&type=track&limit=10&market=${getMarket()}`
+    const response = await runWithTimeout(
+      () =>
+        Spicetify.CosmosAsync.get(
+          `https://api.spotify.com/v1/search?q=${query}&type=track&limit=10&market=${getMarket()}`
+        ),
+      SOURCE_TIMEOUT_MS
     ).catch(() => null)
     const tracks = response?.tracks?.items ?? []
     return tracks.find(
@@ -80,9 +101,14 @@ export const fetchSeedMetadata = async (uri: string): Promise<SeedMetadata> => {
     const artist = track?.artists?.[0]
     const artistId = artist?.id ?? getUriId(artist?.uri ?? "")
     const genres = artistId ? await fetchArtistGenres(artistId) : []
-    const features = await Spicetify.CosmosAsync.get(
-      `https://api.spotify.com/v1/audio-features/${base.trackId}`
-    ).catch(() => null)
+    const featureResult = await optionalSpotifyCapabilities.run(
+      "audio-features",
+      () =>
+        Spicetify.CosmosAsync.get(
+          `https://api.spotify.com/v1/audio-features/${base.trackId}`
+        )
+    )
+    const features = featureResult.status === "ok" ? featureResult.value : null
 
     return enrichSeedMetadata({
       uri,
@@ -112,11 +138,15 @@ export const enrichSeedMetadata = async (seed: SeedMetadata): Promise<SeedMetada
 
   try {
     const { queryAlbumTracks } = Spicetify.GraphQL.Definitions
-    const { data, errors } = await Spicetify.GraphQL.Request(queryAlbumTracks, {
-      uri: seed.albumUri,
-      offset: 0,
-      limit: 1,
-    })
+    const { data, errors } = await runWithTimeout(
+      () =>
+        Spicetify.GraphQL.Request(queryAlbumTracks, {
+          uri: seed.albumUri,
+          offset: 0,
+          limit: 1,
+        }),
+      SOURCE_TIMEOUT_MS
+    )
 
     if (errors?.length) return seed
 
@@ -133,7 +163,10 @@ export const enrichSeedMetadata = async (seed: SeedMetadata): Promise<SeedMetada
   }
 }
 
-export const enrichCandidatesFromSearch = (items: Array<Record<string, unknown>>): TrackCandidate[] => {
+export const enrichCandidatesFromSearch = (
+  items: Array<Record<string, unknown>>,
+  sourceId = "search"
+): TrackCandidate[] => {
   const candidates: TrackCandidate[] = []
 
   for (const item of items) {
@@ -149,16 +182,23 @@ export const enrichCandidatesFromSearch = (items: Array<Record<string, unknown>>
     const uri = track.uri ?? (track.id ? `spotify:track:${track.id}` : "")
     if (!uri || !isWebApiTrackPlayable(track)) continue
     const artist = track.artists?.[0]
-    candidates.push({
-      uri,
-      artistUri: artist?.uri ?? (artist?.id ? `spotify:artist:${artist.id}` : undefined),
-      artistName: artist?.name,
-      albumUri: track.album?.uri ?? (track.album?.id ? `spotify:album:${track.album.id}` : undefined),
-      albumName: track.album?.name,
-      trackName: track.name,
-      popularity: track.popularity,
-      releaseYear: parseYear(track.album?.release_date),
-    })
+    candidates.push(
+      attachSourceProvenance(
+        {
+          uri,
+          artistUri: artist?.uri ?? (artist?.id ? `spotify:artist:${artist.id}` : undefined),
+          artistName: artist?.name,
+          albumUri:
+            track.album?.uri ??
+            (track.album?.id ? `spotify:album:${track.album.id}` : undefined),
+          albumName: track.album?.name,
+          trackName: track.name,
+          popularity: track.popularity,
+          releaseYear: parseYear(track.album?.release_date),
+        },
+        sourceId
+      )
+    )
   }
 
   return candidates

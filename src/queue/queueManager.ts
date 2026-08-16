@@ -1,38 +1,41 @@
 import type { TrackCandidate } from "../session/types"
 import { fisherYatesShuffle } from "../algorithm/shuffle"
 
-type QueueTrack = {
-  contextTrack: {
-    uri: string
-    uid: string
-    metadata: {
-      is_queued: string
-    }
-  }
-  removed: unknown[]
-  blocked: unknown[]
-  provider: string
-}
-
 type PlaybackContext = {
   uri: string
   url: string
 }
 
-const formatQueueTrack = (uri: string): QueueTrack => ({
-  contextTrack: {
-    uri,
-    uid: "",
-    metadata: {
-      is_queued: "false",
-    },
-  },
-  removed: [],
-  blocked: [],
-  provider: "context",
-})
-
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+const QUEUE_OPERATION_TIMEOUT_MS = 5_000
+
+export class QueueOperationTimeoutError extends Error {
+  readonly code = "SERVICE_UNAVAILABLE"
+
+  constructor(operation: string) {
+    super(`Spotify did not finish ${operation} in time`)
+    this.name = "QueueOperationTimeoutError"
+  }
+}
+
+export const runQueueOperationWithTimeout = async <T>(
+  operation: () => Promise<T> | T,
+  label: string,
+  timeoutMs = QUEUE_OPERATION_TIMEOUT_MS
+): Promise<T> => {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new QueueOperationTimeoutError(label)),
+      Math.max(1, timeoutMs)
+    )
+  })
+  try {
+    return await Promise.race([Promise.resolve().then(operation), timeout])
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+}
 
 export const isPlaylistContext = (uri?: string | null): boolean => {
   if (!uri) return false
@@ -136,17 +139,33 @@ export const detachFromPlaylistContext = async (albumUri?: string | null) => {
 
   try {
     const sessionId = Spicetify.Platform.PlayerAPI.getState().sessionId
-    await Spicetify.Platform.PlayerAPI.updateContext(sessionId, {
-      uri: fallback.uri,
-      url: fallback.url,
-    })
+    await runQueueOperationWithTimeout(
+      () => Spicetify.Platform.PlayerAPI.updateContext(sessionId, {
+        uri: fallback.uri,
+        url: fallback.url,
+      }),
+      "the playback context update"
+    )
   } catch (error) {
     console.warn("[Shuffle Similar] Could not switch away from playlist context", error)
   }
 }
 
 export const getUpcomingQueueUris = (): string[] => {
+  const readUri = (track: any): string | null => {
+    const uri = track?.uri ?? track?.contextTrack?.uri
+    return typeof uri === "string" ? uri : null
+  }
+
   try {
+    const publicTracks = (Spicetify.Queue?.nextTracks ?? [])
+      .map(readUri)
+      .filter((uri: string | null): uri is string => Boolean(uri))
+      .filter((uri: string) => uri !== "spotify:delimiter")
+    if (publicTracks.length > 0) return [...new Set(publicTracks)]
+
+    // Compatibility fallback for Spotify builds where the public queue has
+    // not hydrated yet. Private internals are never the primary contract.
     const queue = Spicetify.Platform.PlayerAPI._queue?._queueState
     if (!queue) return []
 
@@ -160,20 +179,6 @@ export const getUpcomingQueueUris = (): string[] => {
 
 export const getUpcomingCount = (): number => getUpcomingQueueUris().length
 
-const getQueueClient = () => {
-  try {
-    const playerQueue = Spicetify.Platform.PlayerAPI._queue
-    if (!playerQueue?._client?.setQueue) return null
-    return {
-      client: playerQueue._client,
-      prevTracks: playerQueue._queue?.prevTracks ?? [],
-      queueRevision: Spicetify.Queue?.queueRevision ?? playerQueue._queue?.queueRevision,
-    }
-  } catch {
-    return null
-  }
-}
-
 const disableNativeShuffle = () => {
   try {
     if (Spicetify.Player.getShuffle?.()) {
@@ -184,11 +189,16 @@ const disableNativeShuffle = () => {
   }
 }
 
-const clearQueueSafe = async () => {
+const clearQueueSafe = async (): Promise<boolean> => {
   try {
-    await Spicetify.Platform.PlayerAPI.clearQueue()
-  } catch {
-    // ignore
+    await runQueueOperationWithTimeout(
+      () => Spicetify.Platform.PlayerAPI.clearQueue(),
+      "the queue clear"
+    )
+    return true
+  } catch (error) {
+    if (error instanceof QueueOperationTimeoutError) throw error
+    return false
   }
 }
 
@@ -200,43 +210,22 @@ const addTracksSafe = async (uris: string[]) => {
   if (items.length === 0) return
 
   disableNativeShuffle()
-  await Spicetify.Platform.PlayerAPI.addToQueue(items)
-}
-
-const setQueueSafe = async (uris: string[], resetPrevTracks = false): Promise<boolean> => {
-  const tracks = uris.filter((uri) => uri?.startsWith("spotify:track:"))
-  if (tracks.length === 0) return false
-
-  const withDelimiter = [...tracks, "spotify:delimiter"]
-  disableNativeShuffle()
-
-  const queueClient = getQueueClient()
-  if (!queueClient) return false
-
-  try {
-    queueClient.client.setQueue({
-      nextTracks: withDelimiter.map(formatQueueTrack),
-      prevTracks: resetPrevTracks ? [] : queueClient.prevTracks,
-      queueRevision: Spicetify.Queue?.queueRevision ?? queueClient.queueRevision,
-    })
-    return true
-  } catch (error) {
-    console.warn("[Shuffle Similar] setQueue failed", error)
-    return false
-  }
+  await runQueueOperationWithTimeout(
+    () => Spicetify.Platform.PlayerAPI.addToQueue(items),
+    "the queue add"
+  )
 }
 
 export const replaceQueue = async (
   uris: string[],
-  options: { resetPrevTracks?: boolean } = {}
+  _options: { resetPrevTracks?: boolean } = {}
 ): Promise<void> => {
   const tracks = uris.filter((uri) => uri?.startsWith("spotify:track:"))
   if (tracks.length === 0) return
 
-  const usedSetQueue = await setQueueSafe(tracks, options.resetPrevTracks ?? false)
-  if (usedSetQueue) return
-
-  await clearQueueSafe()
+  if (!(await clearQueueSafe())) {
+    throw new Error("Spotify could not clear the upcoming queue")
+  }
   await addTracksSafe(tracks)
 }
 
@@ -259,7 +248,10 @@ export const playTrack = async (
   const track = { uri: seedUri }
   const context = playbackContext ?? {}
 
-  await Spicetify.Platform.PlayerAPI.play(track, context, {})
+  await runQueueOperationWithTimeout(
+    () => Spicetify.Platform.PlayerAPI.play(track, context, {}),
+    "playback"
+  )
 }
 
 export const queueTracksAfterPlayback = async (queueUris: string[]): Promise<void> => {
@@ -270,26 +262,114 @@ export const queueTracksAfterPlayback = async (queueUris: string[]): Promise<voi
   await addTracksSafe(tracks)
 }
 
-export const replaceUpcomingQueue = async (currentUri: string | null, upcomingUris: string[]): Promise<void> => {
-  await clearQueueSafe()
+export type QueueCommit = {
+  requestedUris: string[]
+  actualUris: string[]
+  verified: boolean
+}
 
+/** A verified snapshot may contain only the hydration quorum; ownership stays
+ * anchored to the complete requested queue, never that partial observation. */
+export const getConfirmedQueueOwnership = (commit: QueueCommit): string[] =>
+  commit.verified ? [...commit.requestedUris] : []
+
+const readPrivateUpcomingQueueUris = (): string[] => {
+  try {
+    const queueState = Spicetify.Platform.PlayerAPI._queue?._queueState
+    const entries = queueState?.nextTracks ?? []
+    return entries
+      .map((track: any) => track?.uri ?? track?.contextTrack?.uri)
+      .filter((uri: unknown): uri is string =>
+        typeof uri === "string" && uri.startsWith("spotify:track:")
+      )
+  } catch {
+    return []
+  }
+}
+
+export const queuePrefixMatches = (expected: string[], actual: string[], limit = 8): boolean => {
+  if (expected.length === 0) return actual.length === 0
+  const requiredPrefixLength = Math.min(expected.length, Math.max(1, limit))
+  if (actual.length < requiredPrefixLength) return false
+  return expected
+    .slice(0, requiredPrefixLength)
+    .every((uri, index) => actual[index] === uri)
+}
+
+const waitForQueueConvergence = async (expected: string[]): Promise<QueueCommit> => {
+  const requestedUris = expected.filter((uri) => uri.startsWith("spotify:track:"))
+  let actualUris = getUpcomingQueueUris()
+  if (requestedUris.length === 0) {
+    return { requestedUris, actualUris, verified: actualUris.length === 0 }
+  }
+
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    const publicUris = getUpcomingQueueUris()
+      .filter((uri) => uri.startsWith("spotify:track:"))
+    const privateUris = readPrivateUpcomingQueueUris()
+    const comparable = queuePrefixMatches(requestedUris, publicUris)
+      ? publicUris
+      : privateUris
+    if (queuePrefixMatches(requestedUris, comparable)) {
+      return { requestedUris, actualUris: comparable, verified: true }
+    }
+    await wait(100)
+  }
+
+  return { requestedUris, actualUris, verified: false }
+}
+
+export const replaceUpcomingQueue = async (
+  currentUri: string | null,
+  upcomingUris: string[]
+): Promise<QueueCommit> => {
   const tracks = upcomingUris
     .filter((uri) => uri.startsWith("spotify:track:"))
     .filter((uri) => !currentUri || uri !== currentUri)
 
-  if (tracks.length === 0) return
+  const previousUris = getUpcomingQueueUris()
+    .filter((uri) => uri.startsWith("spotify:track:"))
 
-  const usedSetQueue = await setQueueSafe(tracks, false)
-  if (usedSetQueue) return
+  if (tracks.length === 0) {
+    if (!(await clearQueueSafe())) throw new Error("Spotify could not clear the upcoming queue")
+    const commit = await waitForQueueConvergence([])
+    if (!commit.verified && previousUris.length > 0) {
+      await addTracksSafe(previousUris)
+    }
+    return commit
+  }
 
-  await addTracksSafe(tracks)
+  // Use the documented PlayerAPI queue contract for live playback. The
+  // private `_queue._client.setQueue` shape is version-sensitive and accepts
+  // internal ContextTrack records that can appear in Spotify's queue while
+  // still failing when the player tries to resolve them.
+  if (!(await clearQueueSafe())) {
+    throw new Error("Spotify could not replace the upcoming queue")
+  }
+  try {
+    await addTracksSafe(tracks)
+  } catch (error) {
+    if (previousUris.length > 0) {
+      await addTracksSafe(previousUris).catch(() => undefined)
+    }
+    throw error
+  }
+
+  const commit = await waitForQueueConvergence(tracks)
+  if (!commit.verified) {
+    if (!(await clearQueueSafe())) {
+      throw new Error("Spotify could not roll back an unconfirmed queue update")
+    }
+    if (previousUris.length > 0) await addTracksSafe(previousUris)
+  }
+  return commit
 }
 
 export const playSeedAndQueue = async (
   seedUri: string,
   queueUris: string[],
   playbackContext?: PlaybackContext | null
-): Promise<void> => {
+): Promise<QueueCommit> => {
   const upcoming = queueUris.filter((uri) => uri !== seedUri && uri.startsWith("spotify:track:"))
 
   // Always play the seed — this is the context-menu path where the user
@@ -305,7 +385,7 @@ export const playSeedAndQueue = async (
     attempts++
   }
 
-  await replaceUpcomingQueue(seedUri, upcoming)
+  return await replaceUpcomingQueue(seedUri, upcoming)
 }
 
 

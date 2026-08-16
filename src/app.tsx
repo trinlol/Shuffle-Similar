@@ -6,8 +6,9 @@ import {
   updateNativeShuffleGuard,
 } from "./ui/nativeShuffleGuard"
 import { removeLegacyExtensionButtons } from "./ui/playbarControls"
-import { handleSongChange } from "./services/shuffleEngine"
+import { handleSongChange, recoverSimilarMixSession } from "./services/shuffleEngine"
 import { sessionManager } from "./session/SessionManager"
+import { syncShuffleSimilarFromPlayback } from "./ui/shuffleSimilarUiState"
 
 const GLOBAL_LOAD_KEY = "__shuffleSimilarExtensionLoaded__"
 const globalScope = globalThis as typeof globalThis & { [GLOBAL_LOAD_KEY]?: boolean }
@@ -66,7 +67,12 @@ const initializeExtension = () => {
       enforceNativeShuffleOff()
     }
     updateNativeShuffleGuard()
-    void handleSongChange()
+    void handleSongChange().then((result) => {
+      if (result === "stopped") {
+        updateNativeShuffleGuard()
+        syncShuffleSimilarFromPlayback()
+      }
+    })
   })
   Spicetify.Player.addEventListener("onprogress", () => {
     if (sessionManager.isActive()) {
@@ -78,6 +84,14 @@ const initializeExtension = () => {
   })
 
   setTimeout(initializePlaybarFeatures, PLAYBAR_INIT_DELAY_MS)
+  setTimeout(() => {
+    void recoverSimilarMixSession().then((recovered) => {
+      if (recovered) {
+        syncShuffleSimilarFromPlayback()
+        console.info("[Shuffle Similar] Recovered the active Similar Mix queue")
+      }
+    })
+  }, PLAYBAR_INIT_DELAY_MS + 250)
 
   console.info("[Shuffle Similar] Extension initialized")
 }

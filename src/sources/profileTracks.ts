@@ -1,9 +1,11 @@
 import type { SeedMetadata, TrackCandidate } from "../session/types"
-import { dedupeCandidates, sortByObscurity } from "../algorithm/filters"
+import { sortByObscurity } from "../algorithm/filters"
 import { candidateFromUri } from "./trackMetadata"
 import { pickRandom } from "../algorithm/shuffle"
 import { isWebApiTrackPlayable } from "../utils/playability"
 import { getUriId } from "../utils/uri"
+import { attachSourceProvenance, mergeCandidatesWithProvenance } from "./provenance"
+import { runWithTimeout } from "./spotifyApiAdapter"
 
 type AlbumTrack = {
   uri?: string
@@ -12,14 +14,53 @@ type AlbumTrack = {
 
 const LIKED_TRACKS_PAGE_SIZE = 50
 const LIKED_TRACKS_MAX = 200
+export const PROFILE_SOURCE_TIMEOUT_MS = 4_000
+const PROFILE_PLAYLIST_CONCURRENCY = 3
+
+class SharedPlaylistRequestLimiter {
+  private active = 0
+  private readonly waiters: Array<() => void> = []
+
+  private async acquire(): Promise<void> {
+    if (this.active < PROFILE_PLAYLIST_CONCURRENCY) {
+      this.active += 1
+      return
+    }
+    await new Promise<void>((resolve) => this.waiters.push(resolve))
+  }
+
+  private release(): void {
+    const next = this.waiters.shift()
+    if (next) {
+      next()
+      return
+    }
+    this.active = Math.max(0, this.active - 1)
+  }
+
+  async run<T>(request: () => Promise<T>): Promise<T> {
+    await this.acquire()
+    try {
+      return await runWithTimeout(() => request(), PROFILE_SOURCE_TIMEOUT_MS)
+    } finally {
+      this.release()
+    }
+  }
+}
+
+const playlistRequestLimiter = new SharedPlaylistRequestLimiter()
 
 const fetchLikedTracksFromWebApi = async (): Promise<TrackCandidate[]> => {
   const candidates: TrackCandidate[] = []
   let offset = 0
 
   while (offset < LIKED_TRACKS_MAX) {
-    const res = await Spicetify.CosmosAsync.get(
-      `https://api.spotify.com/v1/me/tracks?limit=${LIKED_TRACKS_PAGE_SIZE}&offset=${offset}`
+    const res = await runWithTimeout(
+      () =>
+        Spicetify.CosmosAsync.get(
+          `https://api.spotify.com/v1/me/tracks?limit=${LIKED_TRACKS_PAGE_SIZE}&offset=${offset}`
+        ),
+      PROFILE_SOURCE_TIMEOUT_MS
     )
 
     const items = res?.items ?? []
@@ -33,12 +74,17 @@ const fetchLikedTracksFromWebApi = async (): Promise<TrackCandidate[]> => {
         artists?: Array<{ uri?: string; name?: string }>
       } | null
       if (!track || !isWebApiTrackPlayable(track) || !track.uri) continue
-      candidates.push({
-        uri: track.uri,
-        artistUri: track.artists?.[0]?.uri,
-        artistName: track.artists?.[0]?.name,
-        popularity: track.popularity,
-      })
+      candidates.push(
+        attachSourceProvenance(
+          {
+            uri: track.uri,
+            artistUri: track.artists?.[0]?.uri,
+            artistName: track.artists?.[0]?.name,
+            popularity: track.popularity,
+          },
+          "liked-tracks"
+        )
+      )
     }
 
     if (!res?.next) break
@@ -49,8 +95,12 @@ const fetchLikedTracksFromWebApi = async (): Promise<TrackCandidate[]> => {
 }
 
 const fetchLikedTracksFromCollection = async (): Promise<TrackCandidate[]> => {
-  const res = await Spicetify.CosmosAsync.get(
-    "sp://core-collection/unstable/@/list/tracks/all?responseFormat=protobufJson"
+  const res = await runWithTimeout(
+    () =>
+      Spicetify.CosmosAsync.get(
+        "sp://core-collection/unstable/@/list/tracks/all?responseFormat=protobufJson"
+      ),
+    PROFILE_SOURCE_TIMEOUT_MS
   )
 
   return (res.item ?? [])
@@ -63,12 +113,16 @@ const fetchLikedTracksFromCollection = async (): Promise<TrackCandidate[]> => {
           artistName?: string
           popularity?: number
         }
-      }) => ({
-        uri: track.trackMetadata?.link ?? "",
-        artistUri: track.trackMetadata?.artistUri,
-        artistName: track.trackMetadata?.artistName,
-        popularity: track.trackMetadata?.popularity,
-      })
+      }) =>
+        attachSourceProvenance(
+          {
+            uri: track.trackMetadata?.link ?? "",
+            artistUri: track.trackMetadata?.artistUri,
+            artistName: track.trackMetadata?.artistName,
+            popularity: track.trackMetadata?.popularity,
+          },
+          "liked-tracks-collection"
+        )
     )
     .filter((candidate: TrackCandidate) => Boolean(candidate.uri))
 }
@@ -76,14 +130,14 @@ const fetchLikedTracksFromCollection = async (): Promise<TrackCandidate[]> => {
 const fetchLikedTracks = async (): Promise<TrackCandidate[]> => {
   try {
     return await fetchLikedTracksFromWebApi()
-  } catch (webApiError) {
-    console.warn("[Shuffle Similar] Web API liked songs failed, trying collection API", webApiError)
+  } catch {
+    console.info("[Shuffle Similar] Liked songs degraded (using local collection fallback)")
   }
 
   try {
     return await fetchLikedTracksFromCollection()
-  } catch (collectionError) {
-    console.warn("[Shuffle Similar] Collection API liked songs failed", collectionError)
+  } catch {
+    console.warn("[Shuffle Similar] Liked songs unavailable from web and local collection")
     return []
   }
 }
@@ -93,16 +147,25 @@ type PlaylistEntry = {
   name: string
 }
 
+type RootlistNode = { type?: string; uri?: string; name?: string; items?: RootlistNode[] }
+type PlaylistContents = {
+  items?: Array<{ uri: string; isPlayable?: boolean; metadata?: Record<string, string> }>
+}
+type TopTracksResponse = { items?: Array<{ uri?: string }> }
+
 const fetchPlaylistEntries = async (): Promise<PlaylistEntry[]> => {
-  const root = await Spicetify.Platform.RootlistAPI.getContents()
+  const root = await runWithTimeout<{ items?: RootlistNode[] }>(
+    () => Spicetify.Platform.RootlistAPI.getContents(),
+    PROFILE_SOURCE_TIMEOUT_MS
+  )
   const playlists: PlaylistEntry[] = []
 
-  const walk = (items: Array<{ type?: string; uri?: string; name?: string; items?: unknown[] }>) => {
+  const walk = (items: RootlistNode[]) => {
     for (const item of items) {
       if (item.type === "playlist" && item.uri) {
         playlists.push({ uri: item.uri, name: item.name ?? item.uri })
       }
-      if (item.items) walk(item.items as Array<{ type?: string; uri?: string; name?: string; items?: unknown[] }>)
+      if (item.items) walk(item.items)
     }
   }
 
@@ -114,14 +177,16 @@ const fetchPlaylistTracks = async (playlistUri: string): Promise<TrackCandidate[
   const playlistId = getUriId(playlistUri)
   if (!playlistId) return []
 
-  const res = await Spicetify.Platform.PlaylistAPI.getContents(`spotify:playlist:${playlistId}`, {
-    limit: 100,
-  })
+  const res = await playlistRequestLimiter.run<PlaylistContents>(() =>
+    Spicetify.Platform.PlaylistAPI.getContents(`spotify:playlist:${playlistId}`, {
+      limit: 100,
+    })
+  )
 
   return (res.items ?? [])
     .filter((item: { uri: string; isPlayable?: boolean }) => item.uri && item.uri.startsWith("spotify:track:") && item.isPlayable !== false)
     .map((item: { uri: string; metadata?: Record<string, string> }) =>
-      candidateFromUri(item.uri, item.metadata)
+      candidateFromUri(item.uri, item.metadata, "profile-playlist")
     )
 }
 
@@ -135,10 +200,12 @@ export const fetchAllPlaylistTracks = async (playlistUri: string): Promise<Track
 
   try {
     while (true) {
-      const res = await Spicetify.Platform.PlaylistAPI.getContents(`spotify:playlist:${playlistId}`, {
-        limit,
-        offset,
-      })
+      const res = await playlistRequestLimiter.run<PlaylistContents>(() =>
+        Spicetify.Platform.PlaylistAPI.getContents(`spotify:playlist:${playlistId}`, {
+          limit,
+          offset,
+        })
+      )
 
       const items = res?.items ?? []
       if (items.length === 0) break
@@ -146,7 +213,7 @@ export const fetchAllPlaylistTracks = async (playlistUri: string): Promise<Track
       const tracks = items
         .filter((item: { uri: string; isPlayable?: boolean }) => item.uri && item.uri.startsWith("spotify:track:") && item.isPlayable !== false)
         .map((item: { uri: string; metadata?: Record<string, string> }) =>
-          candidateFromUri(item.uri, item.metadata)
+          candidateFromUri(item.uri, item.metadata, "profile-playlist")
         )
 
       allTracks.push(...tracks)
@@ -156,8 +223,8 @@ export const fetchAllPlaylistTracks = async (playlistUri: string): Promise<Track
       }
       offset += limit
     }
-  } catch (error) {
-    console.warn("[Shuffle Similar] Failed to fetch all playlist tracks", error)
+  } catch {
+    console.info("[Shuffle Similar] Playlist source degraded (returning partial tracks)")
   }
 
   return allTracks
@@ -165,22 +232,30 @@ export const fetchAllPlaylistTracks = async (playlistUri: string): Promise<Track
 
 export const fetchTopTracks = async (): Promise<string[]> => {
   const topTracks: string[] = []
-  try {
-    const [shortTermRes, mediumTermRes] = await Promise.all([
-      Spicetify.CosmosAsync.get("https://api.spotify.com/v1/me/top/tracks?limit=50&time_range=short_term"),
-      Spicetify.CosmosAsync.get("https://api.spotify.com/v1/me/top/tracks?limit=50&time_range=medium_term"),
-    ])
+  const results = await Promise.allSettled([
+      runWithTimeout<TopTracksResponse>(
+      () =>
+        Spicetify.CosmosAsync.get(
+          "https://api.spotify.com/v1/me/top/tracks?limit=50&time_range=short_term"
+        ),
+      PROFILE_SOURCE_TIMEOUT_MS
+    ),
+      runWithTimeout<TopTracksResponse>(
+      () =>
+        Spicetify.CosmosAsync.get(
+          "https://api.spotify.com/v1/me/top/tracks?limit=50&time_range=medium_term"
+        ),
+      PROFILE_SOURCE_TIMEOUT_MS
+    ),
+  ])
 
-    const shortTermItems = shortTermRes?.items ?? []
-    const mediumTermItems = mediumTermRes?.items ?? []
-
-    for (const item of [...shortTermItems, ...mediumTermItems]) {
+  for (const result of results) {
+    if (result.status !== "fulfilled") continue
+    for (const item of result.value.items ?? []) {
       if (item?.uri) {
         topTracks.push(item.uri)
       }
     }
-  } catch (error) {
-    console.warn("[Shuffle Similar] Failed to fetch top tracks", error)
   }
   return [...new Set(topTracks)]
 }
@@ -223,7 +298,7 @@ export const fetchProfilePool = async (seed: SeedMetadata): Promise<TrackCandida
   const shuffledLiked = sortByObscurity(liked).slice(0, 120)
   const shuffledPlaylist = sortByObscurity(playlistTracks).slice(0, 120)
 
-  return dedupeCandidates([...shuffledLiked, ...shuffledPlaylist]).filter(
+  return mergeCandidatesWithProvenance([...shuffledLiked, ...shuffledPlaylist]).filter(
     (candidate) => candidate.uri !== seed.uri
   )
 }

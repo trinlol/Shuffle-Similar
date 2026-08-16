@@ -1,7 +1,15 @@
 import type { SeedMetadata, SkipFeedback, TrackCandidate } from "./types"
 import { appendPlayHistory, getSmartConfig } from "../storage/settings"
+import { classifyPlaybackTransition, type PlaybackObservation } from "../feedback/playbackObserver"
+import {
+  createListeningContextKey,
+  createTasteProfileStore,
+  type TasteProfileStore,
+  type TasteSentiment,
+} from "../profile/tasteProfile"
 
 type SessionState = {
+  revision: number
   active: boolean
   toggleEnabled: boolean
   seed: SeedMetadata | null
@@ -19,10 +27,15 @@ type SessionState = {
   currentTrackUri: string | null
   currentProgressMs: number
   currentDurationMs: number
+  lastProgressSampleMs: number | null
+  lastProgressObservedAt: number | null
+  seekDetected: boolean
   skipped: SkipFeedback[]
+  candidateRegistry: Map<string, TrackCandidate>
 }
 
 const state: SessionState = {
+  revision: 0,
   active: false,
   toggleEnabled: false,
   seed: null,
@@ -40,17 +53,27 @@ const state: SessionState = {
   currentTrackUri: null,
   currentProgressMs: 0,
   currentDurationMs: 0,
+  lastProgressSampleMs: null,
+  lastProgressObservedAt: null,
+  seekDetected: false,
   skipped: [],
+  candidateRegistry: new Map(),
 }
 
 const candidateForUri = (uri: string): TrackCandidate | undefined => {
   if (state.seed?.uri === uri) return state.seed
-  return [...state.similarPool, ...state.profilePool, ...state.playlistTracks, ...state.artistTracks]
-    .find((candidate) => candidate.uri === uri)
+  return state.candidateRegistry.get(uri)
+}
+
+let tasteProfileStore: TasteProfileStore | null = null
+const getTasteProfileStore = (): TasteProfileStore => {
+  tasteProfileStore ??= createTasteProfileStore()
+  return tasteProfileStore
 }
 
 export const sessionManager = {
   isActive: () => state.active,
+  getRevision: () => state.revision,
   isToggleEnabled: () => state.toggleEnabled,
   setToggleEnabled: (enabled: boolean) => {
     state.toggleEnabled = enabled
@@ -64,6 +87,7 @@ export const sessionManager = {
   setPools: (similar: TrackCandidate[], profile: TrackCandidate[]) => {
     state.similarPool = similar
     state.profilePool = profile
+    sessionManager.registerCandidates([...similar, ...profile])
   },
   isRefilling: () => state.isRefilling,
   setRefilling: (value: boolean) => {
@@ -75,8 +99,34 @@ export const sessionManager = {
   isArtistSession: () => Boolean(state.artistUri),
   getArtistTracks: () => state.artistTracks,
   getSkipFeedback: () => [...state.skipped],
+  getTasteProfile: (now = Date.now()) => getTasteProfileStore().load(now),
+  getTasteContextKey: (now = Date.now()) => createListeningContextKey(
+    state.playlistUri ? "playlist" : state.artistUri ? "artist" : "track",
+    now
+  ),
+  clearTasteProfile: () => getTasteProfileStore().clear(),
+  recordExplicitFeedback: (candidate: TrackCandidate, sentiment: TasteSentiment) => {
+    if (!candidate.uri?.startsWith("spotify:track:")) return
+    getTasteProfileStore().recordFeedback({
+      sentiment,
+      candidate,
+      genres: state.seed?.genres,
+      occurredAt: Date.now(),
+      contextKey: sessionManager.getTasteContextKey(),
+    })
+  },
+  getCandidate: (uri: string) => candidateForUri(uri),
+  getRegisteredCandidates: () => [...state.candidateRegistry.values()],
+  registerCandidates: (candidates: TrackCandidate[]) => {
+    for (const candidate of candidates) {
+      if (!candidate.uri?.startsWith("spotify:track:")) continue
+      const current = state.candidateRegistry.get(candidate.uri)
+      state.candidateRegistry.set(candidate.uri, current ? { ...current, ...candidate } : candidate)
+    }
+  },
 
   startSession: (seed: SeedMetadata) => {
+    state.revision += 1
     state.active = true
     state.seed = seed
     state.playedUris = [seed.uri]
@@ -92,7 +142,11 @@ export const sessionManager = {
     state.currentTrackUri = seed.uri
     state.currentProgressMs = 0
     state.currentDurationMs = 0
+    state.lastProgressSampleMs = null
+    state.lastProgressObservedAt = null
+    state.seekDetected = false
     state.skipped = []
+    state.candidateRegistry = new Map([[seed.uri, seed]])
   },
 
   startPlaylistSession: (
@@ -101,6 +155,7 @@ export const sessionManager = {
     playlistTracks: TrackCandidate[],
     topTracks: string[]
   ) => {
+    state.revision += 1
     state.active = true
     state.seed = seed
     state.playedUris = [seed.uri]
@@ -116,7 +171,12 @@ export const sessionManager = {
     state.currentTrackUri = seed.uri
     state.currentProgressMs = 0
     state.currentDurationMs = 0
+    state.lastProgressSampleMs = null
+    state.lastProgressObservedAt = null
+    state.seekDetected = false
     state.skipped = []
+    state.candidateRegistry = new Map([[seed.uri, seed]])
+    sessionManager.registerCandidates(playlistTracks)
   },
 
   startArtistSession: (
@@ -124,6 +184,7 @@ export const sessionManager = {
     artistUri: string,
     artistTracks: TrackCandidate[]
   ) => {
+    state.revision += 1
     state.active = true
     state.seed = seed
     state.playedUris = [seed.uri]
@@ -139,11 +200,37 @@ export const sessionManager = {
     state.currentTrackUri = seed.uri
     state.currentProgressMs = 0
     state.currentDurationMs = 0
+    state.lastProgressSampleMs = null
+    state.lastProgressObservedAt = null
+    state.seekDetected = false
     state.skipped = []
+    state.candidateRegistry = new Map([[seed.uri, seed]])
+    sessionManager.registerCandidates(artistTracks)
+  },
+
+  /** Rehydrates only the minimal state required to keep an already-visible
+   * Similar Mix queue alive after Spotify or Spicetify reloads. */
+  resumeSession: (
+    seed: SeedMetadata,
+    queuedUris: string[],
+    position: number,
+    currentUri?: string | null
+  ) => {
+    sessionManager.startSession(seed)
+    const activeUri = currentUri?.startsWith("spotify:track:") ? currentUri : seed.uri
+    state.position = Math.max(0, Math.floor(position))
+    state.currentTrackUri = activeUri
+    state.playedUris = [...new Set([seed.uri, activeUri])]
+    state.queuedUris = queuedUris.filter(
+      (uri) => uri.startsWith("spotify:track:") && uri !== activeUri
+    )
+    state.toggleEnabled = true
   },
 
   endSession: () => {
+    state.revision += 1
     state.active = false
+    state.toggleEnabled = false
     state.seed = null
     state.playedUris = []
     state.queuedUris = []
@@ -159,23 +246,64 @@ export const sessionManager = {
     state.currentTrackUri = null
     state.currentProgressMs = 0
     state.currentDurationMs = 0
+    state.lastProgressSampleMs = null
+    state.lastProgressObservedAt = null
+    state.seekDetected = false
     state.skipped = []
+    state.candidateRegistry = new Map()
   },
 
   recordProgress: (progressMs: number, durationMs: number) => {
+    const observedAt = Date.now()
     if (Number.isFinite(progressMs)) {
+      if (state.lastProgressSampleMs != null && state.lastProgressObservedAt != null) {
+        const mediaDelta = progressMs - state.lastProgressSampleMs
+        const wallDelta = Math.max(0, observedAt - state.lastProgressObservedAt)
+        if (mediaDelta < -5_000 || mediaDelta > wallDelta + 15_000) {
+          state.seekDetected = true
+        }
+      }
       state.currentProgressMs = Math.max(state.currentProgressMs, progressMs)
+      state.lastProgressSampleMs = progressMs
+      state.lastProgressObservedAt = observedAt
     }
     if (Number.isFinite(durationMs) && durationMs > 0) state.currentDurationMs = durationMs
   },
 
-  transitionToTrack: (uri: string) => {
+  transitionToTrack: (uri: string): PlaybackObservation => {
     const previousUri = state.currentTrackUri
-    const previousDurationMs = state.currentDurationMs
-    if (previousUri && previousUri !== uri && previousDurationMs > 0) {
-      const earlySkip = state.currentProgressMs < 30_000 || state.currentProgressMs / previousDurationMs < 0.35
-      const skippedTrack = candidateForUri(previousUri)
-      if (earlySkip && skippedTrack) {
+    const previousCandidate = previousUri ? candidateForUri(previousUri) : undefined
+    const observation = classifyPlaybackTransition(
+      {
+        cause: "songchange",
+        previous: previousCandidate
+          ? {
+              candidate: previousCandidate,
+              extensionOwned: sessionManager.ownsQueueTrack(previousUri!),
+              progressMs: state.seekDetected ? null : state.currentProgressMs,
+              durationMs: state.seekDetected ? null : state.currentDurationMs,
+              context: {
+                sessionId: String(state.revision),
+                source: state.playlistUri ? "playlist" : state.artistUri ? "artist" : "track",
+                genres: previousUri === state.seed?.uri ? state.seed.genres : undefined,
+              },
+            }
+          : null,
+        current: {
+          uri,
+          extensionOwned: sessionManager.ownsQueueTrack(uri),
+        },
+      },
+      Date.now
+    )
+
+    if (observation.tasteOutcome) {
+      getTasteProfileStore().record({
+        ...observation.tasteOutcome,
+        contextKey: sessionManager.getTasteContextKey(),
+      })
+      if (observation.type === "early-skip") {
+        const skippedTrack = observation.candidate
         state.skipped.push({
           artistUri: skippedTrack.artistUri,
           artistName: skippedTrack.artistName,
@@ -194,18 +322,22 @@ export const sessionManager = {
     state.currentTrackUri = uri
     state.currentProgressMs = 0
     state.currentDurationMs = 0
+    state.lastProgressSampleMs = null
+    state.lastProgressObservedAt = null
+    state.seekDetected = false
+    return observation
   },
 
 
-  recordTrackPlayed: (uri: string) => {
-    if (!uri || uri === "spotify:delimiter") return
-    if (!state.playedUris.includes(uri)) {
-      state.playedUris.push(uri)
-    }
+  recordTrackPlayed: (uri: string): boolean => {
+    if (!uri || uri === "spotify:delimiter" || !state.active) return false
+    if (!sessionManager.ownsQueueTrack(uri) || state.playedUris.includes(uri)) return false
+    state.playedUris.push(uri)
     state.position += 1
     state.queuedUris = state.queuedUris.filter((queuedUri) => queuedUri !== uri)
     const config = getSmartConfig(state.seed)
     appendPlayHistory(uri, config.historyPenaltyWindow)
+    return true
   },
 
   setQueuedUris: (uris: string[]) => {

@@ -40,4 +40,8 @@
 
   <text x="500" y="332" fill="#B3B3B3" font-family="Segoe UI, Helvetica Neue, Arial, sans-serif" font-size="36" font-weight="500" letter-spacing="0.5">Spicetify</text>
   <text x="500" y="408" fill="#FFFFFF" font-family="Segoe UI, Helvetica Neue, Arial, sans-serif" font-size="64" font-weight="700" letter-spacing="-1">Shuffle Similar</text>
+  <g transform="translate(1000 365)">
+    <rect width="104" height="44" rx="22" fill="#1ED760" fill-opacity="0.14" stroke="#1ED760" stroke-opacity="0.62"/>
+    <text x="52" y="29" text-anchor="middle" fill="#1ED760" font-family="Segoe UI, Helvetica Neue, Arial, sans-serif" font-size="20" font-weight="700" letter-spacing="1.5">2.0</text>
+  </g>
 </svg>

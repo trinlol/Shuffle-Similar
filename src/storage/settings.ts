@@ -1,4 +1,5 @@
 import type { BlendPhase, SkipFeedback } from "../session/types"
+import type { TasteProfileState } from "../profile/tasteProfile"
 
 export type SmartConfig = {
   eraWindow: number
@@ -13,6 +14,9 @@ export type SmartConfig = {
   matchValence: boolean
   blendPhases: BlendPhase[]
   skipFeedback?: SkipFeedback[]
+  tasteProfile?: TasteProfileState
+  tasteProfileNow?: number
+  tasteContextKey?: string
 }
 
 const HISTORY_KEY = "shuffleSimilar:playHistory"

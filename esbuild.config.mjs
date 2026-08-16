@@ -21,12 +21,13 @@ const buildOptions = {
   outfile,
   format: "iife",
   target: "es2020",
+  minify: !isWatch,
   jsx: "transform",
   jsxFactory: "Spicetify.React.createElement",
   jsxFragment: "Spicetify.React.Fragment",
   logLevel: "info",
   banner: {
-    js: "// NAME: Shuffle Similar\n// DESCRIPTION: Play songs similar to your seed, with automatic learning and playlist creation\n// VERSION: 1.8.2\n// AUTHORS: Shuffle Similar Contributors\n",
+    js: "// NAME: Shuffle Similar\n// DESCRIPTION: Adaptive, source-resilient Similar Mix queues with private automatic learning\n// VERSION: 2.0.0\n// AUTHORS: Shuffle Similar Contributors\n",
   },
 }
 

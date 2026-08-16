@@ -1,28 +1,47 @@
 import { sessionManager } from "../session/SessionManager"
 import { enableAutoplayGuard, disableAutoplayGuard } from "../queue/autoplayGuard"
-import { reshuffleFromCurrentTrack, reshuffleOnToggleOff } from "../services/shuffleEngine"
-import { registerShuffleSimilarUiSync } from "./shuffleSimilarUiState"
+import {
+  clearSimilarMixRecovery,
+  reshuffleFromCurrentTrack,
+  reshuffleOnToggleOff,
+} from "../services/shuffleEngine"
+import {
+  registerShuffleSimilarUiSync,
+  shuffleSimilarStatus,
+} from "./shuffleSimilarUiState"
 import { enforceNativeShuffleOff, updateNativeShuffleGuard } from "./nativeShuffleGuard"
 import {
   SHUFFLE_SIMILAR_TEST_ID,
   findNativeShuffleButton,
   placeElementBeforeShuffle,
+  playbarMutationsAffectControls,
   removeLegacyExtensionButtons,
+  sanitizeClonedPlaybarButton,
   watchForLegacyExtensionButtons,
 } from "./playbarControls"
-import { applyEnhanceIcon, applyRefreshIcon } from "./icons"
+import { applyEnhanceIcon } from "./icons"
+import {
+  mapSimilarMixError,
+  mountSimilarMixStatus,
+  type SimilarMixPublicError,
+  type SimilarMixStatusMount,
+  type SimilarMixStatusSnapshot,
+} from "./status"
 import { debounce } from "../utils/debounce"
 
 const STYLE_ID = "shuffle-similar-button-styles"
 const BUTTON_CLASS = "shuffle-similar-playbar-btn"
-const CLICK_ANIMATION_CLASS = "shuffle-similar-click"
 const TEST_ID = SHUFFLE_SIMILAR_TEST_ID
-const DEFAULT_ICON = "enhance" as const
 
 let buttonElement: HTMLButtonElement | null = null
 let buttonTippy: { setContent: (content: string) => void } | null = null
 let isBusy = false
 let placementObserver: MutationObserver | null = null
+let placementObserverRoot: HTMLElement | null = null
+let statusObserver: MutationObserver | null = null
+let statusObserverRoot: HTMLElement | null = null
+let statusMount: SimilarMixStatusMount | null = null
+let registered = false
 
 const injectStyles = () => {
   if (document.getElementById(STYLE_ID)) return
@@ -35,122 +54,129 @@ const injectStyles = () => {
       display: inline-flex !important;
       align-items: center;
       justify-content: center;
+      min-width: 32px;
+      min-height: 32px;
+      padding: 0;
+      border-radius: 50%;
       opacity: 1 !important;
       visibility: visible !important;
-      transition: color 0.25s ease;
+      color: rgba(var(--spice-rgb-text, 255, 255, 255), 0.7) !important;
+      transition: color 160ms ease, opacity 160ms ease, transform 120ms ease;
     }
 
-    button[data-testid="${TEST_ID}"].${BUTTON_CLASS}[aria-checked="false"] {
-      color: rgba(var(--spice-rgb-text), 0.7) !important;
+    button[data-testid="${TEST_ID}"].${BUTTON_CLASS}[aria-pressed="true"] {
+      color: var(--spice-button, #1ed760) !important;
     }
 
-    button[data-testid="${TEST_ID}"].${BUTTON_CLASS}[aria-checked="false"] svg {
+    button[data-testid="${TEST_ID}"].${BUTTON_CLASS}[aria-busy="true"] {
+      cursor: progress;
+      opacity: 0.72 !important;
+    }
+
+    button[data-testid="${TEST_ID}"].${BUTTON_CLASS}:focus-visible {
+      outline: 2px solid var(--spice-text, #ffffff) !important;
+      outline-offset: 2px !important;
+    }
+
+    button[data-testid="${TEST_ID}"].${BUTTON_CLASS}:active:not([aria-busy="true"]) {
+      transform: scale(0.94);
+    }
+
+    button[data-testid="${TEST_ID}"].${BUTTON_CLASS} svg {
       filter: none !important;
     }
 
-    button[data-testid="${TEST_ID}"].${BUTTON_CLASS}[aria-checked="true"] {
-      color: var(--spice-button) !important;
-    }
-
-    button[data-testid="${TEST_ID}"].${BUTTON_CLASS}[aria-checked="true"] svg {
-      filter: drop-shadow(0 0 6px rgba(var(--spice-rgb-selected-row), 0.85));
-    }
-
-    button[data-testid="${TEST_ID}"].${BUTTON_CLASS}.${CLICK_ANIMATION_CLASS} {
-      animation: shuffle-similar-pulse 0.55s cubic-bezier(0.34, 1.56, 0.64, 1);
-    }
-
-    button[data-testid="${TEST_ID}"].${BUTTON_CLASS}.${CLICK_ANIMATION_CLASS}::after {
-      content: "";
-      position: absolute;
-      inset: -2px;
-      border-radius: 50%;
-      border: 2px solid var(--spice-button);
+    body > #similar-mix-status {
+      position: fixed;
+      left: 50%;
+      bottom: 78px;
+      z-index: 1000;
       opacity: 0;
-      animation: shuffle-similar-ring 0.65s ease-out forwards;
-      pointer-events: none;
+      visibility: hidden;
+      transform: translate(-50%, 6px);
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.24);
     }
 
-    button[data-testid="${TEST_ID}"].${BUTTON_CLASS}[data-hover-refresh="true"] svg {
-      animation: shuffle-similar-spin 0.6s ease-out 1;
+    body > #similar-mix-status[data-state="building"],
+    body > #similar-mix-status[data-state="refreshing"],
+    body > #similar-mix-status[data-state="stopping"],
+    body > #similar-mix-status[data-state="error"],
+    body > #similar-mix-status[data-state="degraded"] {
+      opacity: 1;
+      visibility: visible;
+      transform: translate(-50%, 0);
     }
 
-    @keyframes shuffle-similar-pulse {
-      0% { transform: scale(1); }
-      35% { transform: scale(1.18); }
-      100% { transform: scale(1); }
+    body > #similar-mix-status[data-state="on"] {
+      visibility: visible;
+      animation: similar-mix-confirm 2.4s ease forwards;
     }
 
-    @keyframes shuffle-similar-ring {
-      0% {
-        opacity: 0.85;
-        transform: scale(0.75);
+    @keyframes similar-mix-confirm {
+      0% { opacity: 0; transform: translate(-50%, 6px); }
+      12%, 76% { opacity: 1; transform: translate(-50%, 0); }
+      100% { opacity: 0; visibility: hidden; transform: translate(-50%, -2px); }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      button[data-testid="${TEST_ID}"].${BUTTON_CLASS},
+      body > #similar-mix-status {
+        transition: none;
       }
-      100% {
+
+      button[data-testid="${TEST_ID}"].${BUTTON_CLASS}:active:not([aria-busy="true"]) {
+        transform: none;
+      }
+
+      body > #similar-mix-status[data-state="on"] {
+        animation: none;
         opacity: 0;
-        transform: scale(1.75);
+        visibility: visible;
+        transform: translate(-50%, 0);
       }
-    }
-
-    @keyframes shuffle-similar-spin {
-      from { transform: rotate(0deg); }
-      to { transform: rotate(360deg); }
     }
   `
   document.head.appendChild(style)
 }
 
-const applyButtonIcon = (icon: "default" | "reload") => {
+export type ToggleButtonPresentation = {
+  readonly pressed: boolean
+  readonly busy: boolean
+  readonly label: string
+}
+
+export const getToggleButtonPresentation = (
+  snapshot: SimilarMixStatusSnapshot,
+  enabled: boolean
+): ToggleButtonPresentation => {
+  let label = "Turn on Similar Mix"
+
+  if (snapshot.state === "building") label = "Building Similar Mix…"
+  else if (snapshot.state === "refreshing") label = "Refreshing Similar Mix…"
+  else if (snapshot.state === "stopping") label = "Turning off Similar Mix…"
+  else if (enabled) label = "Turn off Similar Mix · Shift+click to refresh"
+  else if (snapshot.state === "error") label = "Retry Similar Mix"
+
+  return {
+    pressed: enabled,
+    busy: snapshot.copy.busy,
+    label,
+  }
+}
+
+const applyButtonIcon = () => {
   const svg = buttonElement?.querySelector("svg")
   if (!svg) return
 
-  if (icon === "reload") {
-    applyRefreshIcon(svg)
-    return
-  }
-
   applyEnhanceIcon(svg)
+  svg.setAttribute("aria-hidden", "true")
+  svg.removeAttribute("aria-label")
 }
 
 const updateTooltip = (label: string) => {
   buttonElement?.setAttribute("aria-label", label)
   buttonElement?.setAttribute("title", label)
   buttonTippy?.setContent(label)
-}
-
-const refreshTooltip = () => {
-  if (!sessionManager.isToggleEnabled()) {
-    updateTooltip("Shuffle Similar")
-    return
-  }
-
-  updateTooltip("Turn off Shuffle Similar · Shift+click to reshuffle")
-}
-
-const handleMouseEnter = () => {
-  if (!buttonElement || !sessionManager.isToggleEnabled()) return
-  buttonElement.setAttribute("data-hover-refresh", "true")
-  applyButtonIcon("reload")
-}
-
-const handleMouseLeave = () => {
-  if (!buttonElement) return
-  buttonElement.removeAttribute("data-hover-refresh")
-  applyButtonIcon("default")
-}
-
-const playClickAnimation = () => {
-  if (!buttonElement) return
-
-  buttonElement.classList.remove(CLICK_ANIMATION_CLASS)
-  void buttonElement.offsetWidth
-  buttonElement.classList.add(CLICK_ANIMATION_CLASS)
-
-  const handleAnimationEnd = () => {
-    buttonElement?.classList.remove(CLICK_ANIMATION_CLASS)
-    buttonElement?.removeEventListener("animationend", handleAnimationEnd)
-  }
-  buttonElement.addEventListener("animationend", handleAnimationEnd)
 }
 
 const stripActivePresentation = (button: HTMLButtonElement) => {
@@ -167,14 +193,40 @@ const stripActivePresentation = (button: HTMLButtonElement) => {
   svg?.style.removeProperty("color")
 }
 
-const setButtonActive = (active: boolean) => {
+const renderButton = (snapshot = shuffleSimilarStatus.getSnapshot()) => {
   if (!buttonElement) return
-  buttonElement.setAttribute("aria-checked", active ? "true" : "false")
-  buttonElement.classList.toggle("active", active)
 
-  if (!active) {
-    stripActivePresentation(buttonElement)
-  }
+  const presentation = getToggleButtonPresentation(
+    snapshot,
+    sessionManager.isToggleEnabled()
+  )
+  buttonElement.setAttribute("aria-pressed", presentation.pressed ? "true" : "false")
+  buttonElement.setAttribute("aria-busy", presentation.busy ? "true" : "false")
+  buttonElement.dataset.similarMixState = snapshot.state
+  stripActivePresentation(buttonElement)
+  applyButtonIcon()
+  updateTooltip(presentation.label)
+}
+
+const mountLiveStatus = () => {
+  if (!document.body) return
+  statusMount = mountSimilarMixStatus(shuffleSimilarStatus, {
+    document,
+    target: document.body,
+  })
+}
+
+const scheduleStatusWatch = () => {
+  const root = document.body
+  if (!root || (statusObserver && statusObserverRoot === root)) return
+
+  statusObserver?.disconnect()
+  statusObserverRoot = root
+  statusObserver = new MutationObserver(() => {
+    if (statusMount && document.contains(statusMount.element)) return
+    mountLiveStatus()
+  })
+  statusObserver.observe(root, { childList: true })
 }
 
 const placeButton = (): boolean => {
@@ -183,22 +235,24 @@ const placeButton = (): boolean => {
 }
 
 const createShuffleSimilarButton = (shuffleReference: HTMLButtonElement): HTMLButtonElement => {
-  const button = shuffleReference.cloneNode(true) as HTMLButtonElement
+  const button = sanitizeClonedPlaybarButton(
+    shuffleReference.cloneNode(true) as HTMLButtonElement
+  )
 
   button.setAttribute("data-testid", TEST_ID)
-  button.setAttribute("aria-label", "Shuffle Similar")
-  button.setAttribute("aria-checked", "false")
+  button.setAttribute("aria-label", "Turn on Similar Mix")
+  button.setAttribute("title", "Turn on Similar Mix")
+  button.setAttribute("aria-pressed", "false")
+  button.setAttribute("aria-busy", "false")
   button.classList.add(BUTTON_CLASS)
-  button.removeAttribute("disabled")
-  button.removeAttribute("data-shuffle-similar-blocked")
-  button.removeAttribute("aria-disabled")
-  button.tabIndex = 0
 
   stripActivePresentation(button)
 
   const svg = button.querySelector("svg")
   if (svg) {
     applyEnhanceIcon(svg)
+    svg.setAttribute("aria-hidden", "true")
+    svg.removeAttribute("aria-label")
   }
 
   button.addEventListener("click", (event) => {
@@ -206,10 +260,25 @@ const createShuffleSimilarButton = (shuffleReference: HTMLButtonElement): HTMLBu
     event.stopPropagation()
     handleButtonClick(event)
   })
-  button.addEventListener("mouseenter", handleMouseEnter)
-  button.addEventListener("mouseleave", handleMouseLeave)
 
   return button
+}
+
+const syncButtonFromSession = () => {
+  const enabled = sessionManager.isToggleEnabled()
+  const state = shuffleSimilarStatus.getSnapshot().state
+
+  if (!isBusy) {
+    if (enabled && state !== "on" && state !== "degraded") {
+      shuffleSimilarStatus.transitionTo("on")
+    } else if (!enabled && state !== "off" && state !== "error") {
+      shuffleSimilarStatus.transitionTo("off")
+    }
+  }
+
+  mountLiveStatus()
+  scheduleStatusWatch()
+  renderButton()
 }
 
 const mountButton = (): boolean => {
@@ -227,7 +296,11 @@ const mountButton = (): boolean => {
 
   if (buttonElement && !document.contains(buttonElement)) {
     buttonElement = null
+    buttonTippy = null
   }
+
+  const orphan = document.querySelector(`[data-testid="${TEST_ID}"]`)
+  if (orphan && orphan !== buttonElement) orphan.remove()
 
   buttonElement = createShuffleSimilarButton(shuffleButton)
   shuffleButton.before(buttonElement)
@@ -235,7 +308,10 @@ const mountButton = (): boolean => {
   if (Spicetify.Tippy && Spicetify.TippyProps) {
     buttonTippy = Spicetify.Tippy(buttonElement, {
       ...Spicetify.TippyProps,
-      content: "Shuffle Similar",
+      content: getToggleButtonPresentation(
+        shuffleSimilarStatus.getSnapshot(),
+        sessionManager.isToggleEnabled()
+      ).label,
     })
   }
 
@@ -248,6 +324,7 @@ const mountButton = (): boolean => {
 const ensureButtonInDom = () => {
   if (!buttonElement || !document.contains(buttonElement)) {
     buttonElement = null
+    buttonTippy = null
     mountButton()
     return
   }
@@ -257,35 +334,124 @@ const ensureButtonInDom = () => {
 }
 
 const schedulePlacementWatch = () => {
-  if (placementObserver) return
-
   const shuffleButton = findNativeShuffleButton()
   const parent = shuffleButton?.parentElement
   if (!parent) return
 
+  const playbar =
+    document.querySelector<HTMLElement>('[data-testid="now-playing-bar"]') ??
+    document.querySelector<HTMLElement>(".main-nowPlayingBar-nowPlayingBar")
+  const root = playbar ?? parent
+  if (placementObserver && placementObserverRoot === root) return
+
+  placementObserver?.disconnect()
+  placementObserverRoot = root
+
   const syncPlacement = debounce(() => {
     ensureButtonInDom()
-    if (sessionManager.isToggleEnabled()) {
-      updateNativeShuffleGuard()
-    }
-  }, 750)
+    schedulePlacementWatch()
+    updateNativeShuffleGuard()
+  }, 250)
 
-  placementObserver = new MutationObserver(syncPlacement)
-  placementObserver.observe(parent, { childList: true })
+  placementObserver = new MutationObserver((records) => {
+    if (playbarMutationsAffectControls(records, buttonElement)) syncPlacement()
+  })
+  placementObserver.observe(root, { childList: true, subtree: true })
 }
 
-const syncButtonFromSession = () => {
-  const enabled = sessionManager.isToggleEnabled()
-  setButtonActive(enabled)
-  if (!enabled) {
-    buttonElement?.removeAttribute("data-hover-refresh")
-    applyButtonIcon("default")
+const notifyPublicError = (error: unknown, remainsActive = false): SimilarMixPublicError => {
+  const publicError = mapSimilarMixError(error)
+  const message = remainsActive
+    ? `Similar Mix is still on. ${publicError.message}`
+    : `${publicError.title}. ${publicError.message}`
+  Spicetify.showNotification(message, !remainsActive)
+  return publicError
+}
+
+const enableShuffleSimilar = async () => {
+  if (isBusy) return
+  isBusy = true
+  const transaction = shuffleSimilarStatus.beginTransition("building")
+
+  try {
+    if (!Spicetify.Player.data?.item?.uri) {
+      const publicError = notifyPublicError("NO_ACTIVE_TRACK")
+      transaction.fail(publicError)
+      return
+    }
+
+    await reshuffleFromCurrentTrack()
+    sessionManager.setToggleEnabled(true)
+    enableAutoplayGuard()
+    enforceNativeShuffleOff()
+    updateNativeShuffleGuard()
+    transaction.commit("on")
+  } catch (error) {
+    sessionManager.setToggleEnabled(false)
+    disableAutoplayGuard()
+    sessionManager.endSession()
+    clearSimilarMixRecovery()
+    updateNativeShuffleGuard()
+    transaction.fail(notifyPublicError(error))
+  } finally {
+    isBusy = false
+    renderButton()
   }
-  refreshTooltip()
+}
+
+const reshuffleActiveSession = async () => {
+  if (isBusy) return
+  isBusy = true
+  const transaction = shuffleSimilarStatus.beginTransition("refreshing")
+
+  try {
+    if (!Spicetify.Player.data?.item?.uri) {
+      const publicError = notifyPublicError("NO_ACTIVE_TRACK", true)
+      transaction.degrade(publicError)
+      return
+    }
+
+    await reshuffleFromCurrentTrack()
+    sessionManager.setToggleEnabled(true)
+    enableAutoplayGuard()
+    enforceNativeShuffleOff()
+    updateNativeShuffleGuard()
+    transaction.commit("on")
+  } catch (error) {
+    sessionManager.setToggleEnabled(true)
+    enableAutoplayGuard()
+    enforceNativeShuffleOff()
+    updateNativeShuffleGuard()
+    transaction.degrade(notifyPublicError(error, true))
+  } finally {
+    isBusy = false
+    renderButton()
+  }
+}
+
+const disableShuffleSimilar = async () => {
+  if (isBusy) return
+  isBusy = true
+  sessionManager.setToggleEnabled(false)
+  disableAutoplayGuard()
+  sessionManager.endSession()
+  clearSimilarMixRecovery()
+  updateNativeShuffleGuard()
+  const transaction = shuffleSimilarStatus.beginTransition("stopping")
+
+  try {
+    await reshuffleOnToggleOff()
+    transaction.commit("off")
+  } catch (error) {
+    transaction.fail(notifyPublicError(error))
+  } finally {
+    isBusy = false
+    renderButton()
+  }
 }
 
 const handleButtonClick = (event: MouseEvent) => {
-  if (!buttonElement || isBusy) return
+  if (!buttonElement || isBusy || shuffleSimilarStatus.getSnapshot().copy.busy) return
 
   if (!sessionManager.isToggleEnabled()) {
     void enableShuffleSimilar()
@@ -321,90 +487,6 @@ const waitForShuffleButton = () => {
   }, 2000)
 }
 
-const enableShuffleSimilar = async () => {
-  if (isBusy) return
-  isBusy = true
-  playClickAnimation()
-
-  try {
-    sessionManager.setToggleEnabled(true)
-    enforceNativeShuffleOff()
-    enableAutoplayGuard()
-    updateNativeShuffleGuard()
-    setButtonActive(true)
-    refreshTooltip()
-    Spicetify.showNotification("Building Shuffle Similar queue...")
-    await reshuffleFromCurrentTrack()
-  } catch (error) {
-    console.error("[Shuffle Similar]", error)
-    setButtonActive(false)
-    sessionManager.setToggleEnabled(false)
-    disableAutoplayGuard()
-    sessionManager.endSession()
-    updateNativeShuffleGuard()
-    refreshTooltip()
-    Spicetify.showNotification(
-      error instanceof Error ? error.message : "Shuffle Similar failed",
-      true
-    )
-  } finally {
-    isBusy = false
-  }
-}
-
-const reshuffleActiveSession = async () => {
-  if (isBusy) return
-  isBusy = true
-  playClickAnimation()
-
-  try {
-    Spicetify.showNotification("Reshuffling queue...")
-    await reshuffleFromCurrentTrack()
-    refreshTooltip()
-  } catch (error) {
-    console.error("[Shuffle Similar]", error)
-    Spicetify.showNotification(
-      error instanceof Error ? error.message : "Reshuffle failed",
-      true
-    )
-  } finally {
-    isBusy = false
-  }
-}
-
-const disableShuffleSimilar = async () => {
-  if (isBusy) return
-  isBusy = true
-  playClickAnimation()
-
-  try {
-    sessionManager.setToggleEnabled(false)
-    disableAutoplayGuard()
-    sessionManager.endSession()
-    setButtonActive(false)
-    buttonElement?.removeAttribute("data-hover-refresh")
-    applyButtonIcon("default")
-    updateNativeShuffleGuard()
-    refreshTooltip()
-    await reshuffleOnToggleOff()
-    Spicetify.showNotification("Shuffle Similar disabled")
-  } catch (error) {
-    console.error("[Shuffle Similar]", error)
-    sessionManager.setToggleEnabled(false)
-    disableAutoplayGuard()
-    sessionManager.endSession()
-    setButtonActive(false)
-    updateNativeShuffleGuard()
-    refreshTooltip()
-    Spicetify.showNotification(
-      error instanceof Error ? error.message : "Shuffle Similar failed",
-      true
-    )
-  } finally {
-    isBusy = false
-  }
-}
-
 const syncUiFromPlayback = () => {
   if (sessionManager.isToggleEnabled()) {
     enforceNativeShuffleOff()
@@ -418,8 +500,16 @@ const syncUiFromPlayback = () => {
 }
 
 export const registerToggleButton = () => {
+  if (registered) {
+    syncUiFromPlayback()
+    return
+  }
   removeLegacyExtensionButtons()
   watchForLegacyExtensionButtons()
   registerShuffleSimilarUiSync(syncUiFromPlayback)
+  shuffleSimilarStatus.subscribe(renderButton)
+  mountLiveStatus()
+  scheduleStatusWatch()
   waitForShuffleButton()
+  registered = true
 }

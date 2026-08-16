@@ -1,36 +1,71 @@
-import { buildFromContextMenu, startFromContextMenu } from "../services/shuffleEngine"
+import {
+  buildFromContextMenu,
+  startFromContextMenu,
+  teachSimilarMixPreference,
+} from "../services/shuffleEngine"
 import { syncShuffleSimilarFromPlayback } from "./shuffleSimilarUiState"
 import { pickSeedFromCollection } from "../sources/profileTracks"
 import { isPlaylistContext, isValidPlaybackContext } from "../queue/queueManager"
 import { createSimilarPlaylist } from "../services/playlistService"
+import { explainSimilarMixTrack } from "../services/explainability"
 import { sessionManager } from "../session/SessionManager"
 
 let contextMenuRegistered = false
+let contextActionBusy = false
 
-const runPlayWithShuffleSimilar = (uris: string[]) => {
-  Spicetify.showNotification("Building Shuffle Similar queue...")
+const runContextAction = (work: () => Promise<void>, fallbackMessage: string) => {
+  if (contextActionBusy) {
+    Spicetify.showNotification("Similar Mix is already working on that request")
+    return
+  }
+  contextActionBusy = true
   setTimeout(() => {
-    handlePlayWithShuffleSimilar(uris).catch((error) => {
-      console.error("[Shuffle Similar]", error)
-      Spicetify.showNotification(
-        error instanceof Error ? error.message : "Shuffle Similar failed",
-        true
-      )
-    })
+    work()
+      .catch((error) => {
+        console.error("[Shuffle Similar]", error)
+        Spicetify.showNotification(fallbackMessage, true)
+      })
+      .finally(() => { contextActionBusy = false })
   }, 100)
 }
 
+const runPlayWithShuffleSimilar = (uris: string[]) => {
+  Spicetify.showNotification("Building your Similar Mix...")
+  runContextAction(
+    () => handlePlayWithShuffleSimilar(uris),
+    "Similar Mix could not start. Try another selection."
+  )
+}
+
 const runCreateSimilarPlaylist = (uris: string[]) => {
-  Spicetify.showNotification("Building Shuffle Similar playlist...")
-  setTimeout(() => {
-    handleCreateSimilarPlaylist(uris).catch((error) => {
-      console.error("[Shuffle Similar] Could not create playlist", error)
+  Spicetify.showNotification("Creating your Similar playlist...")
+  runContextAction(
+    () => handleCreateSimilarPlaylist(uris),
+    "The Similar playlist could not be created. Try again."
+  )
+}
+
+const runPreferenceFeedback = (uris: string[], sentiment: -1 | 1) => {
+  const label = sentiment > 0 ? "Learning from this track..." : "Tuning away from this track..."
+  Spicetify.showNotification(label)
+  runContextAction(
+    async () => {
+      await teachSimilarMixPreference(uris[0], sentiment)
       Spicetify.showNotification(
-        error instanceof Error ? error.message : "Could not create similar playlist",
-        true
+        sentiment > 0 ? "Similar Mix will lean more this way" : "Similar Mix will avoid this sound"
       )
-    })
-  }, 100)
+    },
+    "Similar Mix could not save that preference. Try again."
+  )
+}
+
+const showTrackExplanation = (uris: string[]) => {
+  const candidate = sessionManager.getCandidate(uris[0])
+  if (!candidate) {
+    Spicetify.showNotification("This track is not part of the active Similar Mix", true)
+    return
+  }
+  Spicetify.showNotification(explainSimilarMixTrack(candidate, sessionManager.getSeed()))
 }
 
 const getUriType = (uri: string): string | null => {
@@ -103,6 +138,8 @@ const handlePlayWithShuffleSimilar = async (uris: string[]) => {
   syncShuffleSimilarFromPlayback()
 }
 
+const isSingleTrack = (uris: string[]): boolean => uris.length === 1 && isTrackUri(uris[0])
+
 const handleCreateSimilarPlaylist = async (uris: string[]) => {
   const seedUri = await pickSeedFromCollection(uris)
   if (!seedUri) {
@@ -113,23 +150,16 @@ const handleCreateSimilarPlaylist = async (uris: string[]) => {
   const contextUri =
     uris.length === 1 && isValidPlaybackContext(uris[0]) ? uris[0] : null
   const { seed, queueUris } = await buildFromContextMenu(seedUri, contextUri)
-  let playlist: Awaited<ReturnType<typeof createSimilarPlaylist>>
-  try {
-    playlist = await createSimilarPlaylist(
-      seed.trackName,
-      seed.artistName,
-      [seed.uri, ...queueUris]
-    )
-  } finally {
-    sessionManager.endSession()
-    sessionManager.setToggleEnabled(false)
-    syncShuffleSimilarFromPlayback()
-  }
+  const playlist = await createSimilarPlaylist(
+    seed.trackName,
+    seed.artistName,
+    [seed.uri, ...queueUris]
+  )
 
   await Spicetify.Player.playUri(playlist.uri)
 
   Spicetify.showNotification(
-    `Playing Similar playlist with ${playlist.trackCount} songs`
+    `Created "Similar to - ${seed.trackName}" with ${playlist.trackCount} tracks. Playing now.`
   )
 }
 
@@ -142,7 +172,7 @@ export const registerContextMenu = () => {
   }
 
   new Spicetify.ContextMenu.Item(
-    "Shuffle Similar",
+    "Start Similar Mix",
     runPlayWithShuffleSimilar,
     isNonPlaylist,
     "enhance"
@@ -156,7 +186,7 @@ export const registerContextMenu = () => {
   ).register()
 
   new Spicetify.ContextMenu.Item(
-    "Shuffle Similar",
+    "Start Similar Mix",
     runPlayWithShuffleSimilar,
     isPlaylistOnly,
     "enhance"
@@ -167,6 +197,25 @@ export const registerContextMenu = () => {
     runCreateSimilarPlaylist,
     isPlaylistOnly,
     "playlist"
+  ).register()
+
+  new Spicetify.ContextMenu.Item(
+    "More like this",
+    (uris) => runPreferenceFeedback(uris, 1),
+    isSingleTrack,
+    "heart"
+  ).register()
+
+new Spicetify.ContextMenu.Item(
+    "Less like this",
+    (uris) => runPreferenceFeedback(uris, -1),
+    isSingleTrack
+).register()
+
+  new Spicetify.ContextMenu.Item(
+    "Why this track?",
+    showTrackExplanation,
+    isSingleTrack
   ).register()
 
   contextMenuRegistered = true

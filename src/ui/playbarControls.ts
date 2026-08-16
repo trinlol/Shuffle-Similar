@@ -4,6 +4,40 @@ export const LEGACY_EXTENSION_TEST_IDS = ["better-shuffle-button", "similar-shuf
 
 const LEGACY_EXTENSION_LABELS = ["Better Shuffle", "Similar Shuffle"] as const
 
+const CLONED_CONTROL_ATTRIBUTES = new Set([
+  "disabled",
+  "form",
+  "formaction",
+  "formmethod",
+  "id",
+  "name",
+  "style",
+  "tabindex",
+  "title",
+  "value",
+])
+
+export const sanitizeClonedPlaybarButton = (button: HTMLButtonElement): HTMLButtonElement => {
+  for (const attribute of button.getAttributeNames()) {
+    if (
+      attribute.startsWith("aria-") ||
+      attribute.startsWith("data-") ||
+      CLONED_CONTROL_ATTRIBUTES.has(attribute)
+    ) {
+      button.removeAttribute(attribute)
+    }
+  }
+
+  for (const descendant of Array.from(button.querySelectorAll("[id]"))) {
+    descendant.removeAttribute("id")
+  }
+
+  button.disabled = false
+  button.type = "button"
+  button.tabIndex = 0
+  return button
+}
+
 const isLegacyExtensionButton = (button: HTMLButtonElement): boolean => {
   const testId = button.getAttribute("data-testid")
   if (testId && (LEGACY_EXTENSION_TEST_IDS as readonly string[]).includes(testId)) {
@@ -52,6 +86,46 @@ export const removeLegacyExtensionButtons = (): number => {
 
 let legacyButtonObserver: MutationObserver | null = null
 
+const removeLegacyButtonsInNode = (node: Node): number => {
+  if (!(node instanceof Element)) return 0
+
+  let removed = 0
+  if (node instanceof HTMLButtonElement && isLegacyExtensionButton(node)) {
+    node.remove()
+    removed += 1
+  }
+
+  const buttons = node.querySelectorAll("button")
+  for (let index = 0; index < buttons.length; index += 1) {
+    const button = buttons.item(index)
+    if (!(button instanceof HTMLButtonElement) || !isLegacyExtensionButton(button)) continue
+    button.remove()
+    removed += 1
+  }
+  return removed
+}
+
+/** Inspect only nodes introduced by a mutation instead of rescanning Spotify's
+ * entire playbar for every React update. */
+export const removeLegacyButtonsFromMutations = (
+  records: readonly Pick<MutationRecord, "addedNodes">[]
+): number => {
+  let removed = 0
+  for (const record of records) {
+    for (let index = 0; index < record.addedNodes.length; index += 1) {
+      const node = record.addedNodes.item(index)
+      if (node) removed += removeLegacyButtonsInNode(node)
+    }
+  }
+
+  if (removed > 0) {
+    console.warn(
+      `[Shuffle Similar] Removed ${removed} legacy playbar button(s). Delete better-shuffle.js and similar-shuffle.js from your Extensions folder.`
+    )
+  }
+  return removed
+}
+
 export const watchForLegacyExtensionButtons = () => {
   removeLegacyExtensionButtons()
 
@@ -61,9 +135,7 @@ export const watchForLegacyExtensionButtons = () => {
   const parent = shuffleButton?.parentElement
   if (!parent) return
 
-  legacyButtonObserver = new MutationObserver(() => {
-    removeLegacyExtensionButtons()
-  })
+  legacyButtonObserver = new MutationObserver(removeLegacyButtonsFromMutations)
   legacyButtonObserver.observe(parent, { childList: true, subtree: true })
 }
 
@@ -71,6 +143,36 @@ export const NATIVE_SHUFFLE_SELECTORS = [
   `button[data-testid="control-button-shuffle"]:not([data-testid="${SHUFFLE_SIMILAR_TEST_ID}"]):not([data-testid="better-shuffle-button"]):not([data-testid="similar-shuffle-button"])`,
   `.main-shuffleButton-button:not([data-testid="${SHUFFLE_SIMILAR_TEST_ID}"]):not([data-testid="better-shuffle-button"]):not([data-testid="similar-shuffle-button"])`,
 ]
+
+const PLAYBAR_CONTROL_MUTATION_SELECTOR = [
+  `[data-testid="${SHUFFLE_SIMILAR_TEST_ID}"]`,
+  ...NATIVE_SHUFFLE_SELECTORS,
+].join(", ")
+
+const nodeContainsPlaybarControl = (node: Node): boolean =>
+  node instanceof Element && (
+    node.matches(PLAYBAR_CONTROL_MUTATION_SELECTOR) ||
+    Boolean(node.querySelector(PLAYBAR_CONTROL_MUTATION_SELECTOR))
+  )
+
+/** Cheaply rejects the frequent playbar mutations that cannot affect either
+ * shuffle control, avoiding timer churn and follow-up DOM reads. */
+export const playbarMutationsAffectControls = (
+  records: readonly Pick<MutationRecord, "addedNodes" | "removedNodes">[],
+  currentButton: Pick<HTMLElement, "isConnected"> | null
+): boolean => {
+  if (currentButton && !currentButton.isConnected) return true
+
+  for (const record of records) {
+    for (const nodes of [record.addedNodes, record.removedNodes]) {
+      for (let index = 0; index < nodes.length; index += 1) {
+        const node = nodes.item(index)
+        if (node && nodeContainsPlaybarControl(node)) return true
+      }
+    }
+  }
+  return false
+}
 
 export const isShuffleSimilarButton = (element: Element | null): boolean =>
   element instanceof HTMLButtonElement &&
@@ -137,10 +239,9 @@ export const isNativeShuffleTarget = (target: EventTarget | null): boolean => {
 }
 
 export const placeElementBeforeShuffle = (element: HTMLElement): boolean => {
-  if (isShuffleSimilarButton(element)) return false
-
   const shuffleButton = findNativeShuffleButton()
   if (!shuffleButton) return false
+  if (element === shuffleButton) return true
 
   if (element.nextElementSibling !== shuffleButton) {
     shuffleButton.before(element)

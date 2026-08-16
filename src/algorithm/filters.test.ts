@@ -99,15 +99,18 @@ describe("automatic recommendation scoring", () => {
       tempo: 130,
       energy: 0.8,
     }
+    const next = { uri: "spotify:track:next", artistUri: "spotify:artist:next" }
+    const another = { uri: "spotify:track:another", artistUri: "spotify:artist:another" }
     sessionManager.startSession(seed)
-    sessionManager.setPools([skipped], [])
+    sessionManager.setPools([skipped, next, another], [])
+    sessionManager.setQueuedUris([skipped.uri, next.uri, another.uri])
     sessionManager.transitionToTrack(skipped.uri)
     sessionManager.recordProgress(12_000, 180_000)
-    sessionManager.transitionToTrack("spotify:track:next")
+    sessionManager.transitionToTrack(next.uri)
     expect(sessionManager.getSkipFeedback()).toHaveLength(1)
 
     sessionManager.recordProgress(90_000, 180_000)
-    sessionManager.transitionToTrack("spotify:track:another")
+    sessionManager.transitionToTrack(another.uri)
     expect(sessionManager.getSkipFeedback()).toHaveLength(1)
     sessionManager.endSession()
   })
@@ -127,6 +130,24 @@ describe("automatic recommendation scoring", () => {
       const recentArtists = result.slice(Math.max(0, index - 3), index).map((track) => track.artistUri)
       expect(recentArtists).not.toContain(result[index].artistUri)
     }
+    vi.restoreAllMocks()
+  })
+
+  it("advances blend phases inside a single batch instead of freezing at its start", () => {
+    vi.spyOn(Math, "random").mockReturnValue(0.99)
+    const similar = Array.from({ length: 10 }, (_, index) => ({
+      uri: `spotify:track:similar-${index}`,
+      artistUri: `spotify:artist:similar-${index}`,
+    }))
+    const profile = Array.from({ length: 10 }, (_, index) => ({
+      uri: `spotify:track:profile-${index}`,
+      artistUri: `spotify:artist:profile-${index}`,
+    }))
+
+    const result = buildTrackBatch(seed, 0, [], similar, profile, getSmartConfig(seed), 10)
+
+    expect(result.slice(0, 4).every((track) => track.uri.includes("similar-"))).toBe(true)
+    expect(result.slice(4).some((track) => track.uri.includes("profile-"))).toBe(true)
     vi.restoreAllMocks()
   })
 })

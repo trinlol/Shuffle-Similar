@@ -1,7 +1,7 @@
 [
   {
     "name": "Shuffle Similar",
-    "description": "Play songs similar to your seed, learn from skips, or create and play a new similar-song playlist",
+    "description": "Build adaptive Similar Mix queues that learn privately from listening and skips",
     "preview": "preview-icon.png",
     "main": "shuffle-similar.js",
     "readme": "README.md",

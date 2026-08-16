@@ -1,6 +1,7 @@
 import type { AcousticProfile, SkipFeedback, TrackCandidate } from "../session/types"
 import { loadPlayHistory } from "../storage/settings"
 import { pickWeightedRandom, popularityWeight } from "./shuffle"
+import { scoreTasteAffinity, type TasteProfileState } from "../profile/tasteProfile"
 
 export const dedupeCandidates = (candidates: TrackCandidate[]): TrackCandidate[] => {
   const seen = new Set<string>()
@@ -174,6 +175,9 @@ export type PickFromPoolOptions = {
   skipFeedback?: SkipFeedback[]
   playlistProfiles?: TrackCandidate[]
   topTrackUris?: Set<string>
+  tasteProfile?: TasteProfileState
+  tasteProfileNow?: number
+  tasteContextKey?: string
 }
 
 export const normalizeTempo = (tempo: number): number =>
@@ -233,7 +237,7 @@ export const pickFromPool = (
   pool: TrackCandidate[],
   options: PickFromPoolOptions
 ): TrackCandidate | null => {
-  const { recentKeys, artistSpacing, albumSpacing, favorObscure, historyWeights, seedYear, eraWindow, seedProfile, skipFeedback, playlistProfiles, topTrackUris } = options
+  const { recentKeys, artistSpacing, albumSpacing, favorObscure, historyWeights, seedYear, eraWindow, seedProfile, skipFeedback, playlistProfiles, topTrackUris, tasteProfile, tasteProfileNow } = options
 
   // Filter for spacing — prefer candidates that respect both artist and album spacing
   const eligible = pool.filter(
@@ -269,6 +273,12 @@ export const pickFromPool = (
     if (playlistProfiles?.length) weight *= playlistAffinityWeight(candidate, playlistProfiles)
     if (topTrackUris?.has(candidate.uri)) weight *= 0.45
     if (skipFeedback?.length) weight *= feedbackWeight(candidate, skipFeedback)
+    if (tasteProfile) {
+      weight *= scoreTasteAffinity(candidate, tasteProfile, {
+        now: tasteProfileNow ?? Date.now(),
+        contextKey: options.tasteContextKey,
+      })
+    }
 
     return Math.max(0.01, weight)
   })

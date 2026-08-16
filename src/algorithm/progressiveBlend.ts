@@ -1,13 +1,7 @@
-import type { BlendPhase, SeedMetadata, TrackCandidate } from "../session/types"
+import type { SeedMetadata, TrackCandidate } from "../session/types"
 import type { SmartConfig } from "../storage/settings"
-import {
-  computeHistoryWeights,
-  dedupeCandidates,
-  excludeArtist,
-  filterPlayableCandidates,
-  getRecentKeys,
-  pickFromPool,
-} from "./filters"
+import { dedupeCandidates, excludeArtist, filterPlayableCandidates } from "./filters"
+import { planRecommendationBatchV2 } from "./recommendationPlannerV2"
 
 export const getBlendWeights = (position: number, settings: SmartConfig) => {
   const phases = settings.blendPhases
@@ -27,75 +21,34 @@ export const buildTrackBatch = (
   settings: SmartConfig,
   count: number
 ): TrackCandidate[] => {
-  const { similarWeight, profileWeight } = getBlendWeights(position, settings)
-  const playedSet = new Set(sessionPlayedUris)
   const excludeEarlyArtist = settings.excludeSeedArtistEarly && position <= 4
+  const profileIsSeedDiscography = profilePool.length > 0 && profilePool.every((candidate) =>
+    candidate.artistUri === seed.artistUri || candidate.artistName === seed.artistName
+  )
 
-  let similar = dedupeCandidates(filterPlayableCandidates(similarPool)).filter(
-    (candidate) => !playedSet.has(candidate.uri)
-  )
-  let profile = dedupeCandidates(filterPlayableCandidates(profilePool)).filter(
-    (candidate) => !playedSet.has(candidate.uri)
-  )
+  let similar = dedupeCandidates(filterPlayableCandidates(similarPool))
+  let profile = dedupeCandidates(filterPlayableCandidates(profilePool))
 
   if (excludeEarlyArtist) {
     similar = excludeArtist(similar, seed.artistUri, seed.artistName)
-    profile = excludeArtist(profile, seed.artistUri, seed.artistName)
-  }
-
-  // Compute graduated history weights for both pools
-  const similarHistoryWeights = computeHistoryWeights(similar, sessionPlayedUris, settings.historyPenaltyWindow)
-  const profileHistoryWeights = computeHistoryWeights(profile, sessionPlayedUris, settings.historyPenaltyWindow)
-
-  const selected: TrackCandidate[] = []
-  const recentPlayed: TrackCandidate[] = []
-  const albumSpacing = 2
-
-  while (selected.length < count && (similar.length > 0 || profile.length > 0)) {
-    const recentKeys = getRecentKeys(recentPlayed, settings.artistSpacing)
-    const useSimilar =
-      similar.length > 0 &&
-      (profile.length === 0 || Math.random() < similarWeight / Math.max(0.0001, similarWeight + profileWeight))
-
-    const pool = useSimilar ? similar : profile
-    const favorObscure = settings.deprioritizePopular
-    const historyWeights = useSimilar ? similarHistoryWeights : profileHistoryWeights
-
-    const picked = pickFromPool(pool, {
-      recentKeys,
-      artistSpacing: settings.artistSpacing,
-      albumSpacing,
-      favorObscure,
-      historyWeights,
-      seedYear: seed.releaseYear,
-      eraWindow: settings.eraWindow,
-      seedProfile: seed,
-      skipFeedback: settings.skipFeedback,
-    })
-
-    if (!picked) break
-
-    selected.push(picked)
-    recentPlayed.push(picked)
-    playedSet.add(picked.uri)
-
-    // Remove from the source pool
-    if (useSimilar) {
-      similar = similar.filter((candidate) => candidate.uri !== picked.uri)
-    } else {
-      profile = profile.filter((candidate) => candidate.uri !== picked.uri)
-    }
-
-    // Cross-pool dedup: also remove from the other pool
-    if (useSimilar) {
-      profile = profile.filter((candidate) => candidate.uri !== picked.uri)
-    } else {
-      similar = similar.filter((candidate) => candidate.uri !== picked.uri)
+    if (!profileIsSeedDiscography) {
+      profile = excludeArtist(profile, seed.artistUri, seed.artistName)
     }
   }
 
-  // Selection is already random; preserve this constraint-safe ordering.
-  return selected
+  return planRecommendationBatchV2({
+    mode: profileIsSeedDiscography ? "artist" : "track",
+    seed,
+    pools: [
+      { candidates: similar, source: "similar-discovery", family: "similar", weight: 1 },
+      { candidates: profile, source: "profile-library", family: "profile", weight: 0.9 },
+    ],
+    excludedUris: sessionPlayedUris,
+    queueTailUris: sessionPlayedUris,
+    settings,
+    count,
+    absoluteStartPosition: position,
+  })
 }
 
 export const buildSinglePoolBatch = (
@@ -103,68 +56,30 @@ export const buildSinglePoolBatch = (
   pool: TrackCandidate[],
   sessionPlayedUris: string[],
   settings: SmartConfig,
-  count: number
+  count: number,
+  absoluteStartPosition = 0
 ): TrackCandidate[] => {
   const playedSet = new Set(sessionPlayedUris)
-  let eligiblePool = pool.filter((track) => !playedSet.has(track.uri))
+  let eligiblePool = filterPlayableCandidates(pool).filter((track) => !playedSet.has(track.uri))
 
   if (eligiblePool.length === 0) {
     // If everything has been played, reset playedSet (except very recent history) to allow repeating
     const recentHistory = sessionPlayedUris.slice(-settings.historyPenaltyWindow)
     playedSet.clear()
     recentHistory.forEach((uri) => playedSet.add(uri))
-    eligiblePool = pool.filter((track) => !playedSet.has(track.uri))
+    eligiblePool = filterPlayableCandidates(pool).filter((track) => !playedSet.has(track.uri))
   }
 
-  const historyWeights = computeHistoryWeights(eligiblePool, sessionPlayedUris, settings.historyPenaltyWindow)
-
-  const selected: TrackCandidate[] = []
-  const recentPlayed: TrackCandidate[] = []
-  const albumSpacing = 2
-
-  while (selected.length < count && eligiblePool.length > 0) {
-    const recentKeys = getRecentKeys(recentPlayed, settings.artistSpacing)
-    const favorObscure = settings.deprioritizePopular
-
-    const picked = pickFromPool(eligiblePool, {
-      recentKeys,
-      artistSpacing: settings.artistSpacing,
-      albumSpacing,
-      favorObscure,
-      historyWeights,
-      seedYear: seed?.releaseYear,
-      eraWindow: settings.eraWindow,
-      seedProfile: seed ?? undefined,
-      skipFeedback: settings.skipFeedback,
-    })
-
-    if (!picked) {
-      // If spacing constraints are too tight and we can't pick, pick without spacing
-      const fallbackPicked = pickFromPool(eligiblePool, {
-        recentKeys: { artists: [], albums: [] },
-        artistSpacing: 0,
-        albumSpacing: 0,
-        favorObscure,
-        historyWeights,
-        seedYear: seed?.releaseYear,
-        eraWindow: settings.eraWindow,
-        seedProfile: seed ?? undefined,
-        skipFeedback: settings.skipFeedback,
-      })
-      if (!fallbackPicked) break
-      selected.push(fallbackPicked)
-      recentPlayed.push(fallbackPicked)
-      playedSet.add(fallbackPicked.uri)
-      eligiblePool = eligiblePool.filter((track) => track.uri !== fallbackPicked.uri)
-    } else {
-      selected.push(picked)
-      recentPlayed.push(picked)
-      playedSet.add(picked.uri)
-      eligiblePool = eligiblePool.filter((track) => track.uri !== picked.uri)
-    }
-  }
-
-  return selected
+  return planRecommendationBatchV2({
+    mode: "single",
+    seed,
+    pools: [{ candidates: filterPlayableCandidates(pool), source: "single-pool", family: "profile", weight: 1 }],
+    excludedUris: [...playedSet],
+    queueTailUris: sessionPlayedUris,
+    settings,
+    count,
+    absoluteStartPosition,
+  })
 }
 
 /**
@@ -178,42 +93,36 @@ export const buildPlaylistBatch = (
   sessionPlayedUris: string[],
   topTrackUris: string[],
   settings: SmartConfig,
-  count: number
+  count: number,
+  absoluteStartPosition = 0,
+  mode: "playlist" | "album" = "playlist"
 ): TrackCandidate[] => {
   const playlistUris = new Set(playlistTracks.map((track) => track.uri))
   const playedUris = new Set(sessionPlayedUris)
-  let eligible = dedupeCandidates(filterPlayableCandidates(candidatePool)).filter(
+  const playableCandidates = dedupeCandidates(filterPlayableCandidates(candidatePool))
+  let eligible = playableCandidates.filter(
     (candidate) => !playlistUris.has(candidate.uri) && !playedUris.has(candidate.uri)
   )
+  let excludedHistory: ReadonlySet<string> = playedUris
 
   if (eligible.length === 0) {
     const recent = new Set(sessionPlayedUris.slice(-settings.historyPenaltyWindow))
-    eligible = dedupeCandidates(filterPlayableCandidates(candidatePool)).filter(
+    excludedHistory = recent
+    eligible = playableCandidates.filter(
       (candidate) => !playlistUris.has(candidate.uri) && !recent.has(candidate.uri)
     )
   }
 
-  const historyWeights = computeHistoryWeights(eligible, sessionPlayedUris, settings.historyPenaltyWindow)
-  const topTracks = new Set(topTrackUris)
-  const selected: TrackCandidate[] = []
-  const recentPlayed: TrackCandidate[] = []
-
-  while (selected.length < count && eligible.length > 0) {
-    const picked = pickFromPool(eligible, {
-      recentKeys: getRecentKeys(recentPlayed, settings.artistSpacing),
-      artistSpacing: settings.artistSpacing,
-      albumSpacing: 2,
-      favorObscure: true,
-      historyWeights,
-      playlistProfiles: playlistTracks,
-      topTrackUris: topTracks,
-      skipFeedback: settings.skipFeedback,
-    })
-    if (!picked) break
-    selected.push(picked)
-    recentPlayed.push(picked)
-    eligible = eligible.filter((candidate) => candidate.uri !== picked.uri)
-  }
-
-  return selected
+  return planRecommendationBatchV2({
+    mode,
+    seed: null,
+    pools: [{ candidates: playableCandidates, source: "playlist-discovery", family: "similar", weight: 1 }],
+    referenceTracks: playlistTracks,
+    excludedUris: [...playlistUris, ...excludedHistory],
+    queueTailUris: sessionPlayedUris,
+    topTrackUris: new Set(topTrackUris),
+    settings: { ...settings, deprioritizePopular: true },
+    count,
+    absoluteStartPosition,
+  })
 }
