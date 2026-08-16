@@ -1,7 +1,8 @@
-import type { SeedMetadata } from "../session/types"
+import type { FamiliarityClassification } from "../session/SessionManager"
+import type { SeedMetadata, TrackCandidate } from "../session/types"
 
 export const ACTIVE_SESSION_STORAGE_KEY = "shuffleSimilar:activeSession:v1"
-const SESSION_SCHEMA_VERSION = 1
+const SESSION_SCHEMA_VERSION = 2
 const MAX_SESSION_AGE_MS = 24 * 60 * 60 * 1_000
 const MAX_QUEUE_URIS = 100
 
@@ -17,9 +18,12 @@ export type ActiveSessionSnapshot = {
   seed: SeedMetadata
   queuedUris: string[]
   position: number
+  recentPositiveAnchors: TrackCandidate[]
+  familiarityLedger: FamiliarityClassification[]
 }
 
-export type ActiveSessionInput = Pick<ActiveSessionSnapshot, "seed" | "queuedUris" | "position">
+export type ActiveSessionInput = Pick<ActiveSessionSnapshot, "seed" | "queuedUris" | "position"> &
+  Partial<Pick<ActiveSessionSnapshot, "recentPositiveAnchors" | "familiarityLedger">>
 
 const safeTrackUris = (uris: readonly string[]): string[] => [
   ...new Set(uris.filter((uri) => typeof uri === "string" && uri.startsWith("spotify:track:"))),
@@ -41,7 +45,8 @@ const validSeed = (value: unknown): value is SeedMetadata => {
 const sanitizeSnapshot = (value: unknown, now: number): ActiveSessionSnapshot | null => {
   if (!value || typeof value !== "object") return null
   const snapshot = value as Partial<ActiveSessionSnapshot>
-  if (snapshot.version !== SESSION_SCHEMA_VERSION || !validSeed(snapshot.seed)) return null
+  const storedVersion = (value as { version?: unknown }).version
+  if ((storedVersion !== 1 && storedVersion !== SESSION_SCHEMA_VERSION) || !validSeed(snapshot.seed)) return null
   if (typeof snapshot.savedAt !== "number" || !Number.isFinite(snapshot.savedAt)) return null
   if (snapshot.savedAt > now + 60_000 || now - snapshot.savedAt > MAX_SESSION_AGE_MS) return null
   if (!Array.isArray(snapshot.queuedUris)) return null
@@ -55,6 +60,21 @@ const sanitizeSnapshot = (value: unknown, now: number): ActiveSessionSnapshot | 
     position: typeof snapshot.position === "number" && Number.isFinite(snapshot.position)
       ? Math.max(0, Math.floor(snapshot.position))
       : 0,
+    recentPositiveAnchors: Array.isArray(snapshot.recentPositiveAnchors)
+      ? snapshot.recentPositiveAnchors
+          .filter((candidate): candidate is TrackCandidate =>
+            Boolean(candidate && typeof candidate === "object" &&
+              typeof (candidate as TrackCandidate).uri === "string" &&
+              (candidate as TrackCandidate).uri.startsWith("spotify:track:"))
+          )
+          .slice(-3)
+      : [],
+    familiarityLedger: Array.isArray(snapshot.familiarityLedger)
+      ? snapshot.familiarityLedger
+          .filter((entry): entry is FamiliarityClassification =>
+            entry === "familiar" || entry === "discovery" || entry === "unknown")
+          .slice(-9)
+      : [],
   }
 }
 
@@ -66,6 +86,8 @@ export const createSessionRecoveryStore = (storage: SessionRecoveryStorage = Spi
       seed: input.seed,
       queuedUris: input.queuedUris,
       position: input.position,
+      recentPositiveAnchors: input.recentPositiveAnchors ?? [],
+      familiarityLedger: input.familiarityLedger ?? [],
     }, now)
     if (!snapshot) return null
     try {

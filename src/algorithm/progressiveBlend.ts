@@ -19,7 +19,10 @@ export const buildTrackBatch = (
   similarPool: TrackCandidate[],
   profilePool: TrackCandidate[],
   settings: SmartConfig,
-  count: number
+  count: number,
+  familiarUris: readonly string[] = sessionPlayedUris,
+  referenceTracks: TrackCandidate[] = [],
+  discoveryHistory: readonly boolean[] = []
 ): TrackCandidate[] => {
   const excludeEarlyArtist = settings.excludeSeedArtistEarly && position <= 4
   const profileIsSeedDiscography = profilePool.length > 0 && profilePool.every((candidate) =>
@@ -45,6 +48,9 @@ export const buildTrackBatch = (
     ],
     excludedUris: sessionPlayedUris,
     queueTailUris: sessionPlayedUris,
+    familiarUris: new Set(familiarUris),
+    referenceTracks,
+    discoveryHistory,
     settings,
     count,
     absoluteStartPosition: position,
@@ -76,6 +82,7 @@ export const buildSinglePoolBatch = (
     pools: [{ candidates: filterPlayableCandidates(pool), source: "single-pool", family: "profile", weight: 1 }],
     excludedUris: [...playedSet],
     queueTailUris: sessionPlayedUris,
+    familiarUris: new Set(sessionPlayedUris),
     settings,
     count,
     absoluteStartPosition,
@@ -95,7 +102,8 @@ export const buildPlaylistBatch = (
   settings: SmartConfig,
   count: number,
   absoluteStartPosition = 0,
-  mode: "playlist" | "album" = "playlist"
+  mode: "playlist" | "album" = "playlist",
+  discoveryHistory: readonly boolean[] = []
 ): TrackCandidate[] => {
   const playlistUris = new Set(playlistTracks.map((track) => track.uri))
   const playedUris = new Set(sessionPlayedUris)
@@ -121,6 +129,8 @@ export const buildPlaylistBatch = (
     excludedUris: [...playlistUris, ...excludedHistory],
     queueTailUris: sessionPlayedUris,
     topTrackUris: new Set(topTrackUris),
+    familiarUris: new Set([...playlistUris, ...topTrackUris, ...sessionPlayedUris]),
+    discoveryHistory,
     settings: { ...settings, deprioritizePopular: true },
     count,
     absoluteStartPosition,

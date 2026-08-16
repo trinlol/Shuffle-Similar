@@ -2,6 +2,30 @@
 
 All notable changes to Shuffle Similar are documented in this file.
 
+## [2.1.0] - 2026-08-16
+
+### Added
+
+- Neutral playback-failure watchdog and quarantine recovery for owned tracks that Spotify cannot start
+- Diverse-source foreground quorum with bounded, generation-scoped advisory results from late sources
+- Account-scoped learning from confirmed plays, repeats, Top Items, and Recently Played history
+- Bounded positive anchors and a rolling 40% discovery-eligible floor to learn taste without creating an echo chamber
+- Recovery persistence for adaptive anchors and discovery history
+
+### Changed
+
+- Starting a Similar Mix now invalidates old queue work, detaches prior context, clears Spotify's queue, installs the new slate, and verifies stable public/private queue order before taking ownership
+- Queue refills and reranks share one serialized mutation lane and ignore stale session revisions
+- Playlist profile sampling and source discovery now have foreground latency bounds
+- Discovery history now reflects tracks actually encountered instead of unseen future queue entries
+
+### Fixed
+
+- Restores the previous queue when a fresh install fails after clearing it
+- Rejects reordered, duplicated, foreign, or stale observable queue tails
+- Prevents older song-change callbacks and in-flight refills from corrupting playback recovery
+- Advances past an unavailable track only when the immediate next entry is owned and not quarantined
+
 ## [2.0.1] - 2026-08-16
 
 ### Fixed

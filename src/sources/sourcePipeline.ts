@@ -27,6 +27,12 @@ export type SourcePipelineOptions = {
   now?: () => number
 }
 
+export type SourceRunOptions<T> = {
+  quorum?: (values: ReadonlyArray<{ sourceId: string; value: T }>) => boolean
+  onLateValue?: (value: { sourceId: string; value: T }) => void
+  foregroundDeadlineMs?: number
+}
+
 type SourceHealth = {
   consecutiveFailures: number
   openUntil: number
@@ -42,7 +48,10 @@ const isEmpty = (value: unknown): boolean => Array.isArray(value) && value.lengt
 export class SourcePipeline {
   private readonly health = new Map<string, SourceHealth>()
   private activeTasks = 0
-  private readonly capacityWaiters: Array<() => void> = []
+  private readonly capacityWaiters: Array<{
+    signal: AbortSignal
+    resolve: (acquired: boolean) => void
+  }> = []
   private readonly timeoutMs: number
   private readonly maxConcurrency: number
   private readonly failureThreshold: number
@@ -85,30 +94,71 @@ export class SourcePipeline {
     }
   }
 
-  private async acquireCapacity(): Promise<void> {
+  private async acquireCapacity(signal: AbortSignal): Promise<boolean> {
+    if (signal.aborted) return false
     if (this.activeTasks < this.maxConcurrency) {
       this.activeTasks += 1
-      return
+      return true
     }
-    await new Promise<void>((resolve) => this.capacityWaiters.push(resolve))
+    return await new Promise<boolean>((resolve) => {
+      const waiter = { signal, resolve }
+      const cancel = () => {
+        const index = this.capacityWaiters.indexOf(waiter)
+        if (index >= 0) this.capacityWaiters.splice(index, 1)
+        resolve(false)
+      }
+      signal.addEventListener("abort", cancel, { once: true })
+      waiter.resolve = (acquired) => {
+        signal.removeEventListener("abort", cancel)
+        resolve(acquired)
+      }
+      this.capacityWaiters.push(waiter)
+    })
   }
 
   private releaseCapacity(): void {
-    const next = this.capacityWaiters.shift()
-    if (next) {
-      next()
+    while (this.capacityWaiters.length > 0) {
+      const next = this.capacityWaiters.shift()!
+      if (next.signal.aborted) continue
+      next.resolve(true)
       return
     }
     this.activeTasks = Math.max(0, this.activeTasks - 1)
   }
 
-  async run<T>(tasks: SourceTask<T>[]): Promise<SourcePipelineResult<T>> {
+  async run<T>(
+    tasks: SourceTask<T>[],
+    options: SourceRunOptions<T> = {}
+  ): Promise<SourcePipelineResult<T>> {
     const values: Array<{ sourceId: string; value: T }> = []
     const diagnostics: SourceDiagnostic[] = new Array(tasks.length)
     let nextIndex = 0
+    let foregroundResolved = false
+    const pendingLaunches = new AbortController()
+    let resolveForeground: ((result: SourcePipelineResult<T>) => void) | null = null
+    let foregroundTimer: ReturnType<typeof setTimeout> | null = null
+
+    const snapshotResult = (): SourcePipelineResult<T> => ({
+      values: [...values],
+      diagnostics: diagnostics.filter((diagnostic): diagnostic is SourceDiagnostic => Boolean(diagnostic)),
+      degraded: diagnostics.some((diagnostic) => Boolean(diagnostic) && diagnostic.status !== "ok"),
+    })
+
+    const finishForeground = () => {
+      if (foregroundResolved) return
+      foregroundResolved = true
+      pendingLaunches.abort()
+      if (foregroundTimer) clearTimeout(foregroundTimer)
+      resolveForeground?.(snapshotResult())
+    }
+
+    const maybeResolveQuorum = () => {
+      if (!options.quorum?.(values)) return
+      finishForeground()
+    }
 
     const worker = async () => {
-      while (nextIndex < tasks.length) {
+      while (nextIndex < tasks.length && !foregroundResolved) {
         const index = nextIndex
         nextIndex += 1
         const task = tasks[index]
@@ -124,7 +174,12 @@ export class SourcePipeline {
           continue
         }
 
-        await this.acquireCapacity()
+        const acquired = await this.acquireCapacity(pendingLaunches.signal)
+        if (!acquired) break
+        if (foregroundResolved) {
+          this.releaseCapacity()
+          break
+        }
         const controller = new AbortController()
         let timer: ReturnType<typeof setTimeout> | undefined
 
@@ -142,7 +197,12 @@ export class SourcePipeline {
             status,
             latencyMs: Math.max(0, this.now() - startedAt),
           }
-          values.push({ sourceId: task.id, value })
+          const resultValue = { sourceId: task.id, value }
+          if (foregroundResolved) options.onLateValue?.(resultValue)
+          else {
+            values.push(resultValue)
+            maybeResolveQuorum()
+          }
           this.rememberHealth(task.id, { consecutiveFailures: 0, openUntil: 0 })
         } catch (error) {
           const timedOut =
@@ -167,12 +227,29 @@ export class SourcePipeline {
     }
 
     const workerCount = Math.min(this.maxConcurrency, Math.max(1, tasks.length))
-    await Promise.all(Array.from({ length: workerCount }, () => worker()))
+    const completion = Promise.all(Array.from({ length: workerCount }, () => worker()))
+      .then(() => {
+        if (!foregroundResolved) {
+          finishForeground()
+        }
+      })
+      .catch((error) => {
+        console.warn("[Shuffle Similar] Source pipeline worker failed", error)
+        if (!foregroundResolved) {
+          finishForeground()
+        }
+      })
 
-    return {
-      values,
-      diagnostics,
-      degraded: diagnostics.some((diagnostic) => diagnostic.status !== "ok"),
-    }
+    return await new Promise<SourcePipelineResult<T>>((resolve) => {
+      resolveForeground = resolve
+      if (options.foregroundDeadlineMs != null) {
+        foregroundTimer = setTimeout(
+          finishForeground,
+          Math.max(1, options.foregroundDeadlineMs)
+        )
+      }
+      maybeResolveQuorum()
+      void completion
+    })
   }
 }

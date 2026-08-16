@@ -29,6 +29,47 @@ const discoveryPipeline = new SourcePipeline({
   cooldownMs: 90_000,
 })
 
+const DISCOVERY_QUORUM_CANDIDATES = 75
+const DISCOVERY_CACHE_TTL_MS = 2 * 60_000
+const HIGH_AFFINITY_SOURCES = new Set(["recommendations", "inspired-by", "radio"])
+const BREADTH_SOURCES = new Set(["genre-era-search", "era-search", "related-artists"])
+const lateDiscoveryCache = new BoundedCache<
+  string,
+  { expiresAt: number; candidates: TrackCandidate[] }
+>(12)
+const discoveryGenerations = new BoundedCache<string, number>(12)
+
+const rememberLateDiscovery = (seedUri: string, sourceId: string, candidates: TrackCandidate[]) => {
+  if (candidates.length === 0) return
+  const current = lateDiscoveryCache.get(seedUri)?.candidates ?? []
+  lateDiscoveryCache.set(seedUri, {
+    expiresAt: Date.now() + DISCOVERY_CACHE_TTL_MS,
+    candidates: mergeCandidatesWithProvenance([
+      ...current,
+      ...candidates.map((candidate) => attachSourceProvenance(candidate, sourceId)),
+    ]).slice(0, 200),
+  })
+}
+
+const takeLateDiscovery = (seedUri: string): TrackCandidate[] => {
+  const entry = lateDiscoveryCache.take(seedUri)
+  if (!entry || entry.expiresAt <= Date.now()) return []
+  return entry.candidates
+}
+
+const hasDiscoveryQuorum = (
+  values: ReadonlyArray<{ sourceId: string; value: TrackCandidate[] }>
+): boolean => {
+  const successful = values.filter(({ value }) => value.length > 0)
+  if (successful.length < 3) return false
+  if (!successful.some(({ sourceId }) => HIGH_AFFINITY_SOURCES.has(sourceId))) return false
+  if (!successful.some(({ sourceId }) => BREADTH_SOURCES.has(sourceId))) return false
+  const uniqueUris = new Set(
+    successful.flatMap(({ value }) => value.map((candidate) => candidate.uri))
+  )
+  return uniqueUris.size >= DISCOVERY_QUORUM_CANDIDATES
+}
+
 const mapWithConcurrency = async <Input, Output>(
   items: readonly Input[],
   concurrency: number,
@@ -485,6 +526,9 @@ const fetchSimilarPoolInternal = async (
   settings: SmartConfig,
   enrichResults: boolean
 ): Promise<TrackCandidate[]> => {
+  const generation = (discoveryGenerations.get(seed.uri) ?? 0) + 1
+  discoveryGenerations.set(seed.uri, generation)
+  const cachedLateCandidates = takeLateDiscovery(seed.uri)
   const results = await discoveryPipeline.run<TrackCandidate[]>([
     { id: "recommendations", run: () => fetchRecommendations(seed, settings, 50) },
     { id: "inspired-by", run: () => fetchInspiredByMix(seed.uri) },
@@ -493,9 +537,17 @@ const fetchSimilarPoolInternal = async (
     { id: "era-search", run: () => fetchEraOnlyCandidates(seed, settings) },
     { id: "related-artists", run: () => fetchRelatedArtistCandidates(seed) },
     { id: "album-peers", run: () => fetchAlbumPeerCandidates(seed) },
-  ])
+  ], {
+    quorum: hasDiscoveryQuorum,
+    onLateValue: ({ sourceId, value }) => {
+      if (discoveryGenerations.get(seed.uri) === generation) {
+        rememberLateDiscovery(seed.uri, sourceId, value)
+      }
+    },
+    foregroundDeadlineMs: 4_500,
+  })
 
-  const merged: TrackCandidate[] = []
+  const merged: TrackCandidate[] = [...cachedLateCandidates]
   for (const result of results.values) {
     merged.push(
       ...result.value.map((candidate) => attachSourceProvenance(candidate, result.sourceId))

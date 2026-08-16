@@ -468,12 +468,13 @@ export const createSpicetifyLocalStorageAdapter = (
 })
 
 export const createTasteProfileStore = (
-  storage: TasteProfileStorage = createSpicetifyLocalStorageAdapter()
+  storage: TasteProfileStorage = createSpicetifyLocalStorageAdapter(),
+  storageKey = TASTE_PROFILE_STORAGE_KEY
 ): TasteProfileStore => {
   const read = (now: number): DecodeResult => {
     let raw: string | null = null
     try {
-      raw = storage.get(TASTE_PROFILE_STORAGE_KEY)
+      raw = storage.get(storageKey)
     } catch {
       return { profile: createEmptyTasteProfile(now), status: "missing" }
     }
@@ -483,13 +484,13 @@ export const createTasteProfileStore = (
   const repairIfNeeded = (decoded: DecodeResult): void => {
     if (decoded.status === "malformed") {
       try {
-        storage.remove(TASTE_PROFILE_STORAGE_KEY)
+        storage.remove(storageKey)
       } catch {
         // A broken local store must never break playback.
       }
     } else if (decoded.status === "migrated") {
       try {
-        storage.set(TASTE_PROFILE_STORAGE_KEY, JSON.stringify(decoded.profile))
+        storage.set(storageKey, JSON.stringify(decoded.profile))
       } catch {
         // The migrated in-memory profile is still safe to use for this session.
       }
@@ -511,7 +512,7 @@ export const createTasteProfileStore = (
 
       const updated = recordPlaybackOutcome(decoded.profile, outcome)
       try {
-        storage.set(TASTE_PROFILE_STORAGE_KEY, JSON.stringify(updated))
+        storage.set(storageKey, JSON.stringify(updated))
       } catch {
         // Learning is best-effort and local storage failure must not interrupt playback.
       }
@@ -525,7 +526,7 @@ export const createTasteProfileStore = (
 
       const updated = recordExplicitTasteFeedback(decoded.profile, feedback)
       try {
-        storage.set(TASTE_PROFILE_STORAGE_KEY, JSON.stringify(updated))
+        storage.set(storageKey, JSON.stringify(updated))
       } catch {
         // Explicit feedback remains best-effort and never interrupts playback.
       }
@@ -533,7 +534,7 @@ export const createTasteProfileStore = (
     },
     clear: () => {
       try {
-        storage.remove(TASTE_PROFILE_STORAGE_KEY)
+        storage.remove(storageKey)
       } catch {
         // Clearing an unavailable local store is already effectively complete.
       }

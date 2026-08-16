@@ -1,14 +1,19 @@
-# Shuffle Similar 2.0
+# Shuffle Similar 2.1
 
 Shuffle Similar builds a coherent **Similar Mix** around the track, album, artist, or playlist you choose. It combines several Spotify discovery paths with your own listening context, spaces repeats, paces musical transitions, and quietly adapts when you skip. There are no preference forms or tuning panels to maintain.
 
-## What 2.0 does
+## What 2.1 does
 
 - Fuses ranked candidates from radio, inspired-by, search, related-artist, era, playlist, and library sources instead of trusting one endpoint
 - Plans the queue as a complete slate: canonical duplicate removal, artist and album spacing, source coverage, progressive library blending, and acoustic transition pacing
 - Learns from clear playback outcomes such as completion, substantial listening, and genuine early skips; pauses, seeks, errors, and leaving the mix do not poison the profile
 - Saves a bounded, decaying taste profile locally in Spicetify storage; it is not uploaded as extension telemetry
 - Re-ranks what comes next immediately after an early skip
+- Clears and verifies the previous Spotify queue before a new Similar Mix takes ownership
+- Recovers from an owned unplayable track without treating the failure as a dislike
+- Learns per Spotify account from confirmed plays, skips, completions, repeats, Top Items, and Recently Played history
+- Keeps at least 40% of each rolling window discovery-eligible when the candidate supply allows it
+- Returns the first diverse recommendation slate at a bounded source quorum while late work remains advisory
 - Keeps working in a documented degraded mode when an optional Spotify discovery capability is unavailable
 - Commits queue changes transactionally and only shows the active state after Spotify confirms the new queue
 - Provides keyboard, screen-reader, focus, busy, error, reduced-motion, and high-contrast-aware states that fit Spotify's playbar
@@ -56,7 +61,7 @@ Spotify periodically changes which Web API capabilities are available to develop
 
 ## Privacy and reset
 
-Automatic learning is stored only in Spicetify's local storage. The profile is versioned, bounded, time-decayed, and can recover from malformed or older data. Removing the extension's local storage entry `shuffleSimilar:tasteProfile:v2` resets learned preferences.
+Automatic learning is stored only in Spicetify's local storage. Profiles and confirmed play history are isolated by Spotify account when identity is available, bounded, time-decayed, and recover from malformed or older data. Removing local-storage entries beginning with `shuffleSimilar:tasteProfile:v2` and `shuffleSimilar:playHistory` resets learned preferences.
 
 ## Development
 

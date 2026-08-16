@@ -1,9 +1,16 @@
 import type { SeedMetadata, SkipFeedback, TrackCandidate } from "./types"
-import { appendPlayHistory, getSmartConfig } from "../storage/settings"
+import {
+  appendPlayHistory,
+  getSmartConfig,
+  loadPlayHistory,
+  PLAY_HISTORY_STORAGE_KEY,
+} from "../storage/settings"
 import { classifyPlaybackTransition, type PlaybackObservation } from "../feedback/playbackObserver"
 import {
   createListeningContextKey,
+  createSpicetifyLocalStorageAdapter,
   createTasteProfileStore,
+  TASTE_PROFILE_STORAGE_KEY,
   type TasteProfileStore,
   type TasteSentiment,
 } from "../profile/tasteProfile"
@@ -32,7 +39,13 @@ type SessionState = {
   seekDetected: boolean
   skipped: SkipFeedback[]
   candidateRegistry: Map<string, TrackCandidate>
+  quarantinedUris: Set<string>
+  recentPositiveAnchors: TrackCandidate[]
+  familiarityLedger: FamiliarityClassification[]
+  confirmedHistoryUris: Set<string>
 }
+
+export type FamiliarityClassification = "familiar" | "discovery" | "unknown"
 
 const state: SessionState = {
   revision: 0,
@@ -58,6 +71,10 @@ const state: SessionState = {
   seekDetected: false,
   skipped: [],
   candidateRegistry: new Map(),
+  quarantinedUris: new Set(),
+  recentPositiveAnchors: [],
+  familiarityLedger: [],
+  confirmedHistoryUris: new Set(),
 }
 
 const candidateForUri = (uri: string): TrackCandidate | undefined => {
@@ -65,15 +82,98 @@ const candidateForUri = (uri: string): TrackCandidate | undefined => {
   return state.candidateRegistry.get(uri)
 }
 
+const resetAdaptiveState = (): void => {
+  state.quarantinedUris = new Set()
+  state.recentPositiveAnchors = []
+  state.familiarityLedger = []
+  state.confirmedHistoryUris = new Set()
+}
+
+const rememberPositiveAnchor = (candidate: TrackCandidate): void => {
+  if (candidate.uri === state.seed?.uri) return
+  state.recentPositiveAnchors = [
+    ...state.recentPositiveAnchors.filter((anchor) => anchor.uri !== candidate.uri),
+    candidate,
+  ].slice(-3)
+}
+
+const recordEncounteredFamiliarity = (uri: string): void => {
+  const classification: FamiliarityClassification = state.profilePool.some(
+    (candidate) => candidate.uri === uri
+  )
+    ? "familiar"
+    : state.similarPool.some((candidate) => candidate.uri === uri)
+      ? "discovery"
+      : "unknown"
+  state.familiarityLedger.push(classification)
+  state.familiarityLedger = state.familiarityLedger.slice(-9)
+}
+
 let tasteProfileStore: TasteProfileStore | null = null
+const TASTE_PROFILE_ANONYMOUS_KEY = `${TASTE_PROFILE_STORAGE_KEY}:anonymous-install`
+const TASTE_PROFILE_LEGACY_CLAIM_KEY = "shuffleSimilar:tasteProfile:legacyClaimedBy"
+const PLAY_HISTORY_ANONYMOUS_KEY = `${PLAY_HISTORY_STORAGE_KEY}:anonymous-install`
+const PLAY_HISTORY_LEGACY_CLAIM_KEY = "shuffleSimilar:playHistory:legacyClaimedBy"
+let playHistoryStorageKey = PLAY_HISTORY_ANONYMOUS_KEY
+let identityInitialization: Promise<string | null> | null = null
 const getTasteProfileStore = (): TasteProfileStore => {
-  tasteProfileStore ??= createTasteProfileStore()
+  tasteProfileStore ??= createTasteProfileStore(
+    createSpicetifyLocalStorageAdapter(),
+    TASTE_PROFILE_ANONYMOUS_KEY
+  )
   return tasteProfileStore
 }
 
 export const sessionManager = {
+  initializeTasteIdentity: async (): Promise<string | null> => {
+    if (!identityInitialization) identityInitialization = (async () => {
+      try {
+      const identity = await Promise.race([
+        Spicetify.CosmosAsync.get("https://api.spotify.com/v1/me"),
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error("identity timeout")), 2_500)),
+      ]) as { account_id?: string; id?: string }
+      const rawId = identity.account_id ?? identity.id
+      if (!rawId) return null
+      const accountId = rawId.replace(/[^A-Za-z0-9._-]/g, "").slice(0, 128)
+      if (!accountId) return null
+      const storage = createSpicetifyLocalStorageAdapter()
+      const accountKey = `${TASTE_PROFILE_STORAGE_KEY}:account:${accountId}`
+      const accountHistoryKey = `${PLAY_HISTORY_STORAGE_KEY}:account:${accountId}`
+      try {
+        if (!storage.get(accountKey) && !storage.get(TASTE_PROFILE_LEGACY_CLAIM_KEY)) {
+          const legacy = storage.get(TASTE_PROFILE_STORAGE_KEY)
+          if (legacy) storage.set(accountKey, legacy)
+          storage.set(TASTE_PROFILE_LEGACY_CLAIM_KEY, accountId)
+        }
+        if (!storage.get(accountHistoryKey) && !storage.get(PLAY_HISTORY_LEGACY_CLAIM_KEY)) {
+          const legacyHistory = storage.get(PLAY_HISTORY_STORAGE_KEY)
+          if (legacyHistory) storage.set(accountHistoryKey, legacyHistory)
+          storage.set(PLAY_HISTORY_LEGACY_CLAIM_KEY, accountId)
+        }
+      } catch {
+        // Identity isolation still works even when legacy migration is unavailable.
+      }
+      tasteProfileStore = createTasteProfileStore(storage, accountKey)
+      playHistoryStorageKey = accountHistoryKey
+      return accountId
+      } catch {
+        getTasteProfileStore()
+        playHistoryStorageKey = PLAY_HISTORY_ANONYMOUS_KEY
+        return null
+      }
+    })()
+    const pending = identityInitialization
+    try {
+      return await pending
+    } finally {
+      if (identityInitialization === pending) identityInitialization = null
+    }
+  },
   isActive: () => state.active,
   getRevision: () => state.revision,
+  invalidatePendingMutations: () => {
+    state.revision += 1
+  },
   isToggleEnabled: () => state.toggleEnabled,
   setToggleEnabled: (enabled: boolean) => {
     state.toggleEnabled = enabled
@@ -81,6 +181,7 @@ export const sessionManager = {
   getSeed: () => state.seed,
   getPosition: () => state.position,
   getPlayedUris: () => [...state.playedUris],
+  getPlayHistory: () => loadPlayHistory(playHistoryStorageKey),
   getQueuedUris: () => [...state.queuedUris],
   getSimilarPool: () => state.similarPool,
   getProfilePool: () => state.profilePool,
@@ -117,6 +218,22 @@ export const sessionManager = {
   },
   getCandidate: (uri: string) => candidateForUri(uri),
   getRegisteredCandidates: () => [...state.candidateRegistry.values()],
+  getQuarantinedUris: () => [...state.quarantinedUris],
+  isQuarantined: (uri: string) => state.quarantinedUris.has(uri),
+  getRecentPositiveAnchors: () => [...state.recentPositiveAnchors],
+  getFamiliarityLedger: () => [...state.familiarityLedger],
+  recordEncounteredFamiliarity: (uri: string) => {
+    if (!sessionManager.ownsQueueTrack(uri) || state.quarantinedUris.has(uri)) return
+    recordEncounteredFamiliarity(uri)
+  },
+  confirmPlayback: (uri: string): boolean => {
+    if (state.confirmedHistoryUris.has(uri)) return false
+    if (!sessionManager.ownsQueueTrack(uri) || state.quarantinedUris.has(uri)) return false
+    state.confirmedHistoryUris.add(uri)
+    const config = getSmartConfig(state.seed)
+    appendPlayHistory(uri, config.historyPenaltyWindow, playHistoryStorageKey)
+    return true
+  },
   registerCandidates: (candidates: TrackCandidate[]) => {
     for (const candidate of candidates) {
       if (!candidate.uri?.startsWith("spotify:track:")) continue
@@ -147,6 +264,7 @@ export const sessionManager = {
     state.seekDetected = false
     state.skipped = []
     state.candidateRegistry = new Map([[seed.uri, seed]])
+    resetAdaptiveState()
   },
 
   startPlaylistSession: (
@@ -176,6 +294,7 @@ export const sessionManager = {
     state.seekDetected = false
     state.skipped = []
     state.candidateRegistry = new Map([[seed.uri, seed]])
+    resetAdaptiveState()
     sessionManager.registerCandidates(playlistTracks)
   },
 
@@ -205,6 +324,7 @@ export const sessionManager = {
     state.seekDetected = false
     state.skipped = []
     state.candidateRegistry = new Map([[seed.uri, seed]])
+    resetAdaptiveState()
     sessionManager.registerCandidates(artistTracks)
   },
 
@@ -214,7 +334,11 @@ export const sessionManager = {
     seed: SeedMetadata,
     queuedUris: string[],
     position: number,
-    currentUri?: string | null
+    currentUri?: string | null,
+    adaptiveState?: {
+      recentPositiveAnchors?: TrackCandidate[]
+      familiarityLedger?: FamiliarityClassification[]
+    }
   ) => {
     sessionManager.startSession(seed)
     const activeUri = currentUri?.startsWith("spotify:track:") ? currentUri : seed.uri
@@ -224,6 +348,9 @@ export const sessionManager = {
     state.queuedUris = queuedUris.filter(
       (uri) => uri.startsWith("spotify:track:") && uri !== activeUri
     )
+    state.recentPositiveAnchors = (adaptiveState?.recentPositiveAnchors ?? []).slice(-3)
+    state.familiarityLedger = (adaptiveState?.familiarityLedger ?? []).slice(-9)
+    sessionManager.registerCandidates(state.recentPositiveAnchors)
     state.toggleEnabled = true
   },
 
@@ -251,23 +378,47 @@ export const sessionManager = {
     state.seekDetected = false
     state.skipped = []
     state.candidateRegistry = new Map()
+    resetAdaptiveState()
   },
 
-  recordProgress: (progressMs: number, durationMs: number) => {
+  recordProgress: (progressMs: number, durationMs: number, repeatOne = false) => {
     const observedAt = Date.now()
+    let repeated = false
     if (Number.isFinite(progressMs)) {
       if (state.lastProgressSampleMs != null && state.lastProgressObservedAt != null) {
         const mediaDelta = progressMs - state.lastProgressSampleMs
         const wallDelta = Math.max(0, observedAt - state.lastProgressObservedAt)
-        if (mediaDelta < -5_000 || mediaDelta > wallDelta + 15_000) {
+        const wrappedRepeat =
+          repeatOne &&
+          state.currentDurationMs > 0 &&
+          state.lastProgressSampleMs >= state.currentDurationMs * 0.85 &&
+          progressMs <= 5_000
+        if (wrappedRepeat && state.currentTrackUri) {
+          const candidate = candidateForUri(state.currentTrackUri)
+          if (candidate && sessionManager.ownsQueueTrack(candidate.uri)) {
+            getTasteProfileStore().record({
+              type: "completion",
+              candidate,
+              occurredAt: observedAt,
+              contextKey: sessionManager.getTasteContextKey(),
+            })
+            rememberPositiveAnchor(candidate)
+            recordEncounteredFamiliarity(candidate.uri)
+            repeated = true
+            state.currentProgressMs = progressMs
+          }
+        } else if (mediaDelta < -5_000 || mediaDelta > wallDelta + 15_000) {
           state.seekDetected = true
         }
       }
-      state.currentProgressMs = Math.max(state.currentProgressMs, progressMs)
+      state.currentProgressMs = repeated
+        ? progressMs
+        : Math.max(state.currentProgressMs, progressMs)
       state.lastProgressSampleMs = progressMs
       state.lastProgressObservedAt = observedAt
     }
     if (Number.isFinite(durationMs) && durationMs > 0) state.currentDurationMs = durationMs
+    return { repeated }
   },
 
   transitionToTrack: (uri: string): PlaybackObservation => {
@@ -275,11 +426,16 @@ export const sessionManager = {
     const previousCandidate = previousUri ? candidateForUri(previousUri) : undefined
     const observation = classifyPlaybackTransition(
       {
-        cause: "songchange",
+        cause:
+          previousUri && state.quarantinedUris.has(previousUri)
+            ? "play-failure"
+            : "songchange",
         previous: previousCandidate
           ? {
               candidate: previousCandidate,
-              extensionOwned: sessionManager.ownsQueueTrack(previousUri!),
+              extensionOwned:
+                sessionManager.ownsQueueTrack(previousUri!) ||
+                state.quarantinedUris.has(previousUri!),
               progressMs: state.seekDetected ? null : state.currentProgressMs,
               durationMs: state.seekDetected ? null : state.currentDurationMs,
               context: {
@@ -318,6 +474,16 @@ export const sessionManager = {
         })
         state.skipped = state.skipped.slice(-20)
       }
+      if (
+        previousCandidate &&
+        previousUri !== state.seed?.uri &&
+        (observation.type === "substantial-play" || observation.type === "completion")
+      ) {
+        rememberPositiveAnchor(previousCandidate)
+      }
+    }
+    if (sessionManager.ownsQueueTrack(uri) && !state.quarantinedUris.has(uri)) {
+      recordEncounteredFamiliarity(uri)
     }
     state.currentTrackUri = uri
     state.currentProgressMs = 0
@@ -328,6 +494,39 @@ export const sessionManager = {
     return observation
   },
 
+  recordPlaybackFailure: (uri: string): PlaybackObservation => {
+    const candidate = candidateForUri(uri)
+    const owned = sessionManager.ownsQueueTrack(uri)
+    const observation = classifyPlaybackTransition(
+      {
+        cause: "play-failure",
+        previous: candidate
+          ? {
+              candidate,
+              extensionOwned: owned,
+              progressMs: state.seekDetected ? null : state.currentProgressMs,
+              durationMs: state.seekDetected ? null : state.currentDurationMs,
+              context: {
+                sessionId: String(state.revision),
+                source: state.playlistUri ? "playlist" : state.artistUri ? "artist" : "track",
+              },
+            }
+          : null,
+        current: { uri, extensionOwned: owned },
+      },
+      Date.now
+    )
+    if (observation.type === "play-failure" && owned) {
+      state.quarantinedUris.add(uri)
+      state.queuedUris = state.queuedUris.filter((queuedUri) => queuedUri !== uri)
+      if (state.playedUris.includes(uri) && !state.confirmedHistoryUris.has(uri)) {
+        state.playedUris = state.playedUris.filter((playedUri) => playedUri !== uri)
+        state.position = Math.max(0, state.position - 1)
+      }
+    }
+    return observation
+  },
+
 
   recordTrackPlayed: (uri: string): boolean => {
     if (!uri || uri === "spotify:delimiter" || !state.active) return false
@@ -335,8 +534,6 @@ export const sessionManager = {
     state.playedUris.push(uri)
     state.position += 1
     state.queuedUris = state.queuedUris.filter((queuedUri) => queuedUri !== uri)
-    const config = getSmartConfig(state.seed)
-    appendPlayHistory(uri, config.historyPenaltyWindow)
     return true
   },
 

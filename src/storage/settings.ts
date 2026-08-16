@@ -19,7 +19,7 @@ export type SmartConfig = {
   tasteContextKey?: string
 }
 
-const HISTORY_KEY = "shuffleSimilar:playHistory"
+export const PLAY_HISTORY_STORAGE_KEY = "shuffleSimilar:playHistory"
 const LEGACY_SIMILAR_SHUFFLE_HISTORY_KEY = "similarShuffle:playHistory"
 const LEGACY_BETTER_SHUFFLE_HISTORY_KEY = "betterShuffle:playHistory"
 const LEGACY_BETTER_SHUFFLE_STORAGE_KEY = "betterShuffle:settings"
@@ -80,19 +80,19 @@ const migrateLegacyStorage = (): void => {
   ]
   for (const legacyKey of legacyHistoryKeys) {
     const legacyHistory = Spicetify.LocalStorage.get(legacyKey)
-    if (legacyHistory && !Spicetify.LocalStorage.get(HISTORY_KEY)) {
-      Spicetify.LocalStorage.set(HISTORY_KEY, legacyHistory)
+    if (legacyHistory && !Spicetify.LocalStorage.get(PLAY_HISTORY_STORAGE_KEY)) {
+      Spicetify.LocalStorage.set(PLAY_HISTORY_STORAGE_KEY, legacyHistory)
       Spicetify.LocalStorage.remove(legacyKey)
       break
     }
   }
 }
 
-export const loadPlayHistory = (): string[] => {
+export const loadPlayHistory = (storageKey = PLAY_HISTORY_STORAGE_KEY): string[] => {
   migrateLegacyStorage()
 
   try {
-    const raw = Spicetify.LocalStorage.get(HISTORY_KEY)
+    const raw = Spicetify.LocalStorage.get(storageKey)
     if (!raw) return []
     const parsed = JSON.parse(raw)
     return Array.isArray(parsed) ? parsed.filter((uri) => typeof uri === "string") : []
@@ -101,8 +101,12 @@ export const loadPlayHistory = (): string[] => {
   }
 }
 
-export const appendPlayHistory = (uri: string, maxWindow: number): void => {
-  const history = loadPlayHistory().filter((entry) => entry !== uri)
+export const appendPlayHistory = (
+  uri: string,
+  maxWindow: number,
+  storageKey = PLAY_HISTORY_STORAGE_KEY
+): void => {
+  const history = loadPlayHistory(storageKey).filter((entry) => entry !== uri)
   history.unshift(uri)
-  Spicetify.LocalStorage.set(HISTORY_KEY, JSON.stringify(history.slice(0, maxWindow)))
+  Spicetify.LocalStorage.set(storageKey, JSON.stringify(history.slice(0, maxWindow)))
 }

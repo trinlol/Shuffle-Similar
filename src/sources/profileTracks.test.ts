@@ -4,6 +4,7 @@ import {
   PROFILE_SOURCE_TIMEOUT_MS,
   fetchAllPlaylistTracks,
   fetchProfilePool,
+  fetchRecentlyPlayedTracks,
   fetchTopTracks,
 } from "./profileTracks"
 
@@ -49,6 +50,31 @@ describe("profile source fallbacks", () => {
     vi.stubGlobal("Spicetify", { CosmosAsync: { get } })
 
     await expect(fetchTopTracks()).resolves.toEqual(["spotify:track:healthy"])
+  })
+
+  it("uses recently played tracks as a bounded profile signal", async () => {
+    vi.stubGlobal("Spicetify", {
+      CosmosAsync: {
+        get: vi.fn().mockResolvedValue({
+          items: [
+            {
+              track: {
+                uri: "spotify:track:recent",
+                is_playable: true,
+                artists: [{ uri: "spotify:artist:recent", name: "Recent Artist" }],
+              },
+            },
+          ],
+        }),
+      },
+    })
+
+    await expect(fetchRecentlyPlayedTracks()).resolves.toEqual([
+      expect.objectContaining({
+        uri: "spotify:track:recent",
+        artistUri: "spotify:artist:recent",
+      }),
+    ])
   })
 
   it("returns liked tracks when Rootlist never settles", async () => {

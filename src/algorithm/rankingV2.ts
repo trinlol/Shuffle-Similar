@@ -85,6 +85,8 @@ export type PlanSlateV2Options = {
   queueTail?: RankableCandidate[]
   maxAcousticTransition?: number
   mmrLambda?: number
+  familiarUris?: ReadonlySet<string>
+  discoveryHistory?: readonly boolean[]
 }
 
 export type RankReasonCode =
@@ -102,11 +104,13 @@ export type PlanReasonCode =
   | "blend:fallback"
   | "diversity:mmr"
   | "diversity:artist-floor"
+  | "discovery:floor"
   | "transition:acoustic-paced"
   | "relax:acoustic-transition"
   | "relax:album-spacing"
   | "relax:artist-spacing"
   | "relax:artist-cap"
+  | "relax:discovery-floor"
 
 export type PlannedTrack = {
   candidate: RankedCandidate
@@ -115,6 +119,7 @@ export type PlannedTrack = {
   blendWeights: Record<BlendFamily, number>
   acousticDistanceFromPrevious: number | null
   reasonCodes: PlanReasonCode[]
+  discoveryEligible: boolean
 }
 
 export type SlatePlan = {
@@ -137,6 +142,8 @@ export type SlateEvaluationMetrics = {
   similarCount: number
   profileCount: number
   relaxedTrackCount: number
+  discoveryEligibleCount: number
+  discoveryFloorRelaxations: number
 }
 
 const SCORE_COMPONENTS: ScoreComponent[] = [
@@ -440,6 +447,8 @@ export const evaluateSlateV2 = (
   let similarCount = 0
   let profileCount = 0
   let relaxedTrackCount = 0
+  let discoveryEligibleCount = 0
+  let discoveryFloorRelaxations = 0
   const absoluteStartPosition = items[0]?.absolutePosition ?? 0
   const queueTailStartPosition = absoluteStartPosition - queueTail.length
   for (let index = 0; index < queueTail.length; index += 1) {
@@ -481,6 +490,8 @@ export const evaluateSlateV2 = (
     if (item.reasonCodes.some((reason) => reason.startsWith("relax:"))) {
       relaxedTrackCount += 1
     }
+    if (item.discoveryEligible) discoveryEligibleCount += 1
+    if (item.reasonCodes.includes("relax:discovery-floor")) discoveryFloorRelaxations += 1
     const previous = index > 0 ? items[index - 1].candidate : queueTail[queueTail.length - 1]
     const transitionDistance = acousticDistanceV2(previous?.acoustic, item.candidate.acoustic)
     if (transitionDistance != null) {
@@ -508,6 +519,8 @@ export const evaluateSlateV2 = (
     similarCount,
     profileCount,
     relaxedTrackCount,
+    discoveryEligibleCount,
+    discoveryFloorRelaxations,
   }
 }
 
@@ -660,6 +673,8 @@ export const planSlateV2 = (
   const queueTail = options.queueTail ?? []
   const maxAcousticTransition = options.maxAcousticTransition ?? 0.42
   const mmrLambda = Math.max(0, Math.min(1, options.mmrLambda ?? 0.72))
+  const familiarUris = options.familiarUris ?? new Set<string>()
+  const discoveryHistory = [...(options.discoveryHistory ?? [])].slice(-9)
   const seenCanonical = new Set(queueTail.map(canonicalTrackKey))
   const seenUris = new Set(queueTail.map((candidate) => candidate.uri))
   let remaining = rankedCandidates.filter((candidate) => {
@@ -707,6 +722,28 @@ export const planSlateV2 = (
       }
     }
     if (feasible.length === 0) break
+    const priorDiscovery = [
+      ...discoveryHistory,
+      ...items.map((item) => item.discoveryEligible),
+    ]
+    const recentDiscovery = priorDiscovery.slice(-9)
+    const discoverySoFar = recentDiscovery.filter(Boolean).length
+    const targetAfterPick = Math.ceil((Math.min(9, priorDiscovery.length) + 1) * 0.4)
+    const needsDiscovery = discoverySoFar < targetAfterPick
+    let usedDiscoveryFloor = false
+    let relaxedDiscoveryFloor = false
+    if (needsDiscovery) {
+      const discoveryEligible = feasible.filter(
+        (candidate) =>
+          !familiarUris.has(candidate.uri) && dominantFamilyFor(candidate) === "similar"
+      )
+      if (discoveryEligible.length > 0) {
+        feasible = discoveryEligible
+        usedDiscoveryFloor = true
+      } else {
+        relaxedDiscoveryFloor = true
+      }
+    }
     let usedArtistFloor = false
     if (absolutePosition < 20) {
       const queueTailStart = start - queueTail.length
@@ -761,6 +798,8 @@ export const planSlateV2 = (
       "diversity:mmr",
     ]
     if (usedArtistFloor) reasonCodes.push("diversity:artist-floor")
+    if (usedDiscoveryFloor) reasonCodes.push("discovery:floor")
+    if (relaxedDiscoveryFloor) reasonCodes.push("relax:discovery-floor")
     if (usedBlendFallback) reasonCodes.push("blend:fallback")
     if (
       acousticDistanceFromPrevious != null &&
@@ -790,6 +829,8 @@ export const planSlateV2 = (
       blendWeights,
       acousticDistanceFromPrevious,
       reasonCodes,
+      discoveryEligible:
+        !familiarUris.has(picked.uri) && dominantFamilyFor(picked) === "similar",
     })
     selected[dominantFamily] += 1
     remaining = remaining.filter((candidate) => candidate.uri !== picked.uri)

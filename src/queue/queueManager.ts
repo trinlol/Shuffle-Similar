@@ -151,18 +151,18 @@ export const detachFromPlaylistContext = async (albumUri?: string | null) => {
   }
 }
 
-export const getUpcomingQueueUris = (): string[] => {
-  const readUri = (track: any): string | null => {
-    const uri = track?.uri ?? track?.contextTrack?.uri
-    return typeof uri === "string" ? uri : null
-  }
+const readQueueUri = (track: any): string | null => {
+  const uri = track?.uri ?? track?.contextTrack?.uri
+  return typeof uri === "string" ? uri : null
+}
 
+export const getRawUpcomingQueueUris = (): string[] => {
   try {
     const publicTracks = (Spicetify.Queue?.nextTracks ?? [])
-      .map(readUri)
+      .map(readQueueUri)
       .filter((uri: string | null): uri is string => Boolean(uri))
       .filter((uri: string) => uri !== "spotify:delimiter")
-    if (publicTracks.length > 0) return [...new Set(publicTracks)]
+    if (publicTracks.length > 0) return publicTracks
 
     // Compatibility fallback for Spotify builds where the public queue has
     // not hydrated yet. Private internals are never the primary contract.
@@ -171,11 +171,13 @@ export const getUpcomingQueueUris = (): string[] => {
 
     const nextUp = (queue.nextUp ?? []).map((track: { uri: string }) => track.uri)
     const queued = (queue.queued ?? []).map((track: { uri: string }) => track.uri)
-    return [...new Set([...nextUp, ...queued])].filter((uri) => uri !== "spotify:delimiter")
+    return [...nextUp, ...queued].filter((uri) => uri !== "spotify:delimiter")
   } catch {
     return []
   }
 }
+
+export const getUpcomingQueueUris = (): string[] => [...new Set(getRawUpcomingQueueUris())]
 
 export const getUpcomingCount = (): number => getUpcomingQueueUris().length
 
@@ -278,7 +280,7 @@ const readPrivateUpcomingQueueUris = (): string[] => {
     const queueState = Spicetify.Platform.PlayerAPI._queue?._queueState
     const entries = queueState?.nextTracks ?? []
     return entries
-      .map((track: any) => track?.uri ?? track?.contextTrack?.uri)
+      .map(readQueueUri)
       .filter((uri: unknown): uri is string =>
         typeof uri === "string" && uri.startsWith("spotify:track:")
       )
@@ -296,22 +298,51 @@ export const queuePrefixMatches = (expected: string[], actual: string[], limit =
     .every((uri, index) => actual[index] === uri)
 }
 
-const waitForQueueConvergence = async (expected: string[]): Promise<QueueCommit> => {
+export const queueSnapshotMatchesRequested = (
+  expected: string[],
+  actual: string[],
+  limit = 8
+): boolean => {
+  if (!queuePrefixMatches(expected, actual, limit)) return false
+  if (actual.length > expected.length) return false
+  return actual.every((uri, index) => expected[index] === uri)
+}
+
+const waitForQueueConvergence = async (
+  expected: string[],
+  options: { strict?: boolean; stableReads?: number } = {}
+): Promise<QueueCommit> => {
   const requestedUris = expected.filter((uri) => uri.startsWith("spotify:track:"))
-  let actualUris = getUpcomingQueueUris()
+  let actualUris = options.strict ? getRawUpcomingQueueUris() : getUpcomingQueueUris()
   if (requestedUris.length === 0) {
     return { requestedUris, actualUris, verified: actualUris.length === 0 }
   }
 
+  const matches = options.strict ? queueSnapshotMatchesRequested : queuePrefixMatches
+  const requiredStableReads = Math.max(1, options.stableReads ?? 1)
+  let stableReads = 0
+  let previousSnapshot = ""
   for (let attempt = 0; attempt < 10; attempt += 1) {
-    const publicUris = getUpcomingQueueUris()
+    const publicUris = (options.strict ? getRawUpcomingQueueUris() : getUpcomingQueueUris())
       .filter((uri) => uri.startsWith("spotify:track:"))
     const privateUris = readPrivateUpcomingQueueUris()
-    const comparable = queuePrefixMatches(requestedUris, publicUris)
-      ? publicUris
-      : privateUris
-    if (queuePrefixMatches(requestedUris, comparable)) {
-      return { requestedUris, actualUris: comparable, verified: true }
+    const comparable = publicUris.length > 0 ? publicUris : privateUris
+    actualUris = comparable
+    const publicMatches = publicUris.length === 0 || matches(requestedUris, publicUris)
+    const privateMatches = privateUris.length === 0 || matches(requestedUris, privateUris)
+    const converged = options.strict
+      ? publicMatches && privateMatches && comparable.length > 0
+      : matches(requestedUris, comparable)
+    if (converged) {
+      const snapshot = `${publicUris.join("\n")}\n--private--\n${privateUris.join("\n")}`
+      stableReads = snapshot === previousSnapshot ? stableReads + 1 : 1
+      previousSnapshot = snapshot
+      if (stableReads >= requiredStableReads) {
+        return { requestedUris, actualUris: comparable, verified: true }
+      }
+    } else {
+      stableReads = 0
+      previousSnapshot = ""
     }
     await wait(100)
   }
@@ -365,6 +396,49 @@ export const replaceUpcomingQueue = async (
   return commit
 }
 
+/** Starts a fresh Similar Mix without allowing the previous playlist or
+ * artist context to repopulate Spotify's queue after it has been cleared. */
+export const replaceUpcomingQueueForNewMix = async (
+  currentUri: string,
+  upcomingUris: string[],
+  albumUri?: string | null
+): Promise<QueueCommit> => {
+  const tracks = [...new Set(upcomingUris)]
+    .filter((uri) => uri.startsWith("spotify:track:"))
+    .filter((uri) => uri !== currentUri)
+  const previousUris = getRawUpcomingQueueUris()
+    .filter((uri) => uri.startsWith("spotify:track:"))
+
+  let lastCommit: QueueCommit = { requestedUris: tracks, actualUris: [], verified: false }
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    await detachFromPlaylistContext(albumUri)
+    if (!(await clearQueueSafe())) throw new Error("Spotify could not replace the upcoming queue")
+    try {
+      await addTracksSafe(tracks)
+    } catch (error) {
+      await clearQueueSafe().catch(() => false)
+      if (previousUris.length > 0) await addTracksSafe(previousUris).catch(() => undefined)
+      throw error
+    }
+    lastCommit = await waitForQueueConvergence(tracks, { strict: true, stableReads: 2 })
+    if (lastCommit.verified) {
+      await wait(250)
+      const guardedSnapshot = getRawUpcomingQueueUris()
+        .filter((uri) => uri.startsWith("spotify:track:"))
+      if (queueSnapshotMatchesRequested(tracks, guardedSnapshot)) {
+        return { ...lastCommit, actualUris: guardedSnapshot }
+      }
+      lastCommit = { ...lastCommit, actualUris: guardedSnapshot, verified: false }
+    }
+  }
+
+  if (!(await clearQueueSafe())) {
+    throw new Error("Spotify could not roll back an unconfirmed fresh queue")
+  }
+  if (previousUris.length > 0) await addTracksSafe(previousUris)
+  return lastCommit
+}
+
 export const playSeedAndQueue = async (
   seedUri: string,
   queueUris: string[],
@@ -385,7 +459,7 @@ export const playSeedAndQueue = async (
     attempts++
   }
 
-  return await replaceUpcomingQueue(seedUri, upcoming)
+  return await replaceUpcomingQueueForNewMix(seedUri, upcoming)
 }
 
 

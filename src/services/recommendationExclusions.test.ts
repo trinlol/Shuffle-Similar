@@ -23,6 +23,23 @@ describe("buildRecommendationExclusions", () => {
     })).toEqual(["played"])
   })
 
+  it("never relaxes a session-quarantined playback failure", () => {
+    expect(buildRecommendationExclusions({
+      playedUris: [],
+      committedQueueUris: ["failed"],
+      visibleQueueUris: ["failed"],
+      quarantinedUris: ["failed"],
+      purpose: "rerank",
+    })).toEqual(["failed"])
+
+    expect(buildHistoryRelaxedExclusions({
+      playedUris: ["old"],
+      committedQueueUris: [],
+      visibleQueueUris: [],
+      quarantinedUris: ["failed"],
+    }, 1)).toEqual(["old", "failed"])
+  })
+
   it("relaxes only old playback history while always protecting the live queue", () => {
     expect(buildHistoryRelaxedExclusions({
       playedUris: ["old-a", "old-b", "recent-a", "recent-b"],

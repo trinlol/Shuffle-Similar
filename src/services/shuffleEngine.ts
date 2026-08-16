@@ -4,7 +4,7 @@ import type { SeedMetadata, TrackCandidate } from "../session/types"
 import { fetchProfilePool, fetchAllPlaylistTracks, fetchTopTracks } from "../sources/profileTracks"
 import { fetchSimilarPool, fetchPlaylistSimilarPool, enrichPlaylistTracks } from "../sources/similarTracks"
 import { fetchSeedMetadata } from "../sources/trackMetadata"
-import { getSmartConfig, loadPlayHistory } from "../storage/settings"
+import { getSmartConfig } from "../storage/settings"
 import { detectForeignInjection, disableAutoplayGuard, enableAutoplayGuard, syncKnownQueue } from "../queue/autoplayGuard"
 import {
   appendTracksToQueue,
@@ -14,6 +14,7 @@ import {
   detachFromPlaylistContext,
   playSeedAndQueue,
   replaceUpcomingQueue,
+  replaceUpcomingQueueForNewMix,
   resolveShuffleSimilarPlaybackContext,
   shuffleUpcomingInPlace,
   isPlaylistContext,
@@ -36,12 +37,31 @@ import {
 } from "./sessionRecovery"
 import { createPrefetchCache } from "./prefetchCache"
 import { assertQueueCompatibility } from "./compatibility"
+import { QueueMutationCoordinator } from "../queue/queueMutationCoordinator"
 
 type StartOptions = {
   forceRefreshPools?: boolean
   playSeed?: boolean
   replaceUpcoming?: boolean
   buildOnly?: boolean
+}
+
+const PROFILE_FOREGROUND_DEADLINE_MS = 4_500
+
+const withForegroundDeadline = async <T>(
+  work: Promise<T>,
+  fallback: T,
+  deadlineMs = PROFILE_FOREGROUND_DEADLINE_MS
+): Promise<T> => {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const deadline = new Promise<T>((resolve) => {
+    timer = setTimeout(() => resolve(fallback), deadlineMs)
+  })
+  try {
+    return await Promise.race([work, deadline])
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
 }
 
 const getSessionConfig = (seed?: SeedMetadata | null) => {
@@ -73,12 +93,12 @@ const ensurePools = async (seed: SeedMetadata, forceRefresh = false) => {
   let similar = forceRefresh ? [] : sessionManager.getSimilarPool()
   let profile = forceRefresh ? [] : sessionManager.getProfilePool()
 
-  if (similar.length === 0) {
-    similar = await fetchSimilarPool(seed, settings)
-  }
-  if (profile.length === 0) {
-    profile = await fetchProfilePool(seed)
-  }
+  ;[similar, profile] = await Promise.all([
+    similar.length === 0 ? fetchSimilarPool(seed, settings) : Promise.resolve(similar),
+    profile.length === 0
+      ? withForegroundDeadline(fetchProfilePool(seed), [])
+      : Promise.resolve(profile),
+  ])
 
   sessionManager.setPools(similar, profile)
   return { similar, profile, settings }
@@ -99,6 +119,7 @@ const buildPlaylistPlayableBatch = async (excludeUpcoming = true) => {
     playedUris,
     committedQueueUris: queuedUris,
     visibleQueueUris: upcomingQueueUris,
+    quarantinedUris: sessionManager.getQuarantinedUris(),
     purpose: excludeUpcoming ? "refill" : "rerank",
   })
 
@@ -113,7 +134,9 @@ const buildPlaylistPlayableBatch = async (excludeUpcoming = true) => {
     sessionManager.getTopTracksBlacklist(),
     settings,
     settings.initialQueueSize,
-    sessionManager.getPosition()
+    sessionManager.getPosition(),
+    "playlist",
+    sessionManager.getFamiliarityLedger().map((entry) => entry === "discovery")
   )
 
   // Last-resort fallback: only use playlist tracks if nothing else worked
@@ -153,6 +176,7 @@ const buildArtistPlayableBatch = async (excludeUpcoming = true) => {
     playedUris,
     committedQueueUris: queuedUris,
     visibleQueueUris: upcomingQueueUris,
+    quarantinedUris: sessionManager.getQuarantinedUris(),
     purpose: excludeUpcoming ? "refill" : "rerank",
   })
 
@@ -167,7 +191,10 @@ const buildArtistPlayableBatch = async (excludeUpcoming = true) => {
     similarTracks,
     artistTracks,
     settings,
-    settings.initialQueueSize
+    settings.initialQueueSize,
+    sessionManager.getPlayHistory(),
+    sessionManager.getRecentPositiveAnchors(),
+    sessionManager.getFamiliarityLedger().map((entry) => entry === "discovery")
   )
 
   // Graceful fallback if batch is empty
@@ -214,6 +241,7 @@ const buildPlayableBatch = async (
     playedUris: sessionManager.getPlayedUris(),
     committedQueueUris: sessionManager.getQueuedUris(),
     visibleQueueUris: excludeUpcoming ? getUpcomingQueueUris() : [],
+    quarantinedUris: sessionManager.getQuarantinedUris(),
     purpose: excludeUpcoming ? "refill" : "rerank",
   })
 
@@ -224,7 +252,10 @@ const buildPlayableBatch = async (
     similar,
     profile,
     settings,
-    settings.initialQueueSize
+    settings.initialQueueSize,
+    [...sessionManager.getPlayHistory(), ...profile.map((candidate) => candidate.uri)],
+    sessionManager.getRecentPositiveAnchors(),
+    sessionManager.getFamiliarityLedger().map((entry) => entry === "discovery")
   )
   let batch = build(excludeUris)
 
@@ -238,6 +269,7 @@ const buildPlayableBatch = async (
       playedUris: sessionManager.getPlayedUris(),
       committedQueueUris: excludeUpcoming ? sessionManager.getQueuedUris() : [],
       visibleQueueUris: excludeUpcoming ? getUpcomingQueueUris() : [],
+      quarantinedUris: sessionManager.getQuarantinedUris(),
     }, Math.max(10, settings.artistSpacing * 2))
     batch = build(relaxedExclusions)
   }
@@ -270,6 +302,7 @@ type PreparedMix = {
 }
 
 const liveMixCoordinator = new LatestMixCoordinator()
+const queueMutationCoordinator = new QueueMutationCoordinator()
 let sessionRecoveryStore: ReturnType<typeof createSessionRecoveryStore> | null = null
 const getSessionRecoveryStore = () => (sessionRecoveryStore ??= createSessionRecoveryStore())
 const prefetchCache = createPrefetchCache()
@@ -282,6 +315,8 @@ const persistActiveSession = (): void => {
     seed,
     queuedUris: sessionManager.getQueuedUris(),
     position: sessionManager.getPosition(),
+    recentPositiveAnchors: sessionManager.getRecentPositiveAnchors(),
+    familiarityLedger: sessionManager.getFamiliarityLedger(),
   })
 }
 
@@ -323,7 +358,11 @@ export const recoverSimilarMixSession = async (): Promise<boolean> => {
     snapshot.seed,
     visibleQueueUris.length > 0 ? visibleQueueUris : snapshot.queuedUris,
     snapshot.position,
-    currentUri
+    currentUri,
+    {
+      recentPositiveAnchors: snapshot.recentPositiveAnchors,
+      familiarityLedger: snapshot.familiarityLedger,
+    }
   )
   sessionManager.registerCandidates([{ ...snapshot.seed }])
   syncKnownQueue(sessionManager.getQueuedUris())
@@ -353,8 +392,10 @@ const prepareMix = async (seed: SeedMetadata, contextUri?: string | null): Promi
       : await fetchAllPlaylistTracks(contextUri)
     const playlistTracks = await enrichPlaylistTracks(rawTracks)
     if (playlistTracks.length === 0) throw new Error("No playable tracks were found in this selection")
-    const topTracks = isAlbum ? [] : await fetchTopTracks()
-    const similarPool = await fetchPlaylistSimilarPool(playlistTracks, settings, 5)
+    const [topTracks, similarPool] = await Promise.all([
+      isAlbum ? Promise.resolve([]) : fetchTopTracks(),
+      fetchPlaylistSimilarPool(playlistTracks, settings, 5),
+    ])
     const selected = buildPlaylistBatch(
       playlistTracks,
       similarPool,
@@ -401,7 +442,7 @@ const prepareMix = async (seed: SeedMetadata, contextUri?: string | null): Promi
   } else {
     const [similarPool, profilePool] = await Promise.all([
       fetchSimilarPool(seed, settings),
-      fetchProfilePool(seed),
+      withForegroundDeadline(fetchProfilePool(seed), []),
     ])
     if (similarPool.length === 0 && profilePool.length === 0) {
       throw new Error("No playable matches were found for this track")
@@ -461,6 +502,7 @@ export const startShuffleSimilar = async (
   options: StartOptions = {}
 ) => {
   if (!options.buildOnly) assertQueueCompatibility()
+  await sessionManager.initializeTasteIdentity()
   const generation = options.buildOnly ? null : liveMixCoordinator.begin()
   const seed = await fetchSeedMetadata(seedUri)
   if (generation != null) liveMixCoordinator.assertCurrent(generation)
@@ -474,16 +516,19 @@ export const startShuffleSimilar = async (
 
   await liveMixCoordinator.commit(generation!, async () => {
     prefetchCache.clear()
+    sessionManager.invalidatePendingMutations()
     const currentUri = Spicetify.Player.data?.item?.uri ?? null
-    const queueCommit = options.replaceUpcoming && currentUri
-      ? await replaceUpcomingQueue(currentUri, prepared.queueUris)
-      : options.playSeed
-        ? await playSeedAndQueue(
-            seed.uri,
-            prepared.queueUris,
-            resolveShuffleSimilarPlaybackContext(contextUri, seed.albumUri)
-          )
-        : await replaceUpcomingQueue(currentUri ?? seed.uri, prepared.queueUris)
+    const queueCommit = await queueMutationCoordinator.run(async () =>
+      options.replaceUpcoming && currentUri
+        ? await replaceUpcomingQueueForNewMix(currentUri, prepared.queueUris, seed.albumUri)
+        : options.playSeed
+          ? await playSeedAndQueue(
+              seed.uri,
+              prepared.queueUris,
+              resolveShuffleSimilarPlaybackContext(contextUri, seed.albumUri)
+            )
+          : await replaceUpcomingQueue(currentUri ?? seed.uri, prepared.queueUris)
+    )
     if (!queueCommit.verified) {
       const error = new Error("Spotify did not confirm the Similar Mix queue")
       ;(error as Error & { code?: string }).code = "SERVICE_UNAVAILABLE"
@@ -531,24 +576,27 @@ export const reshuffleFromCurrentTrack = async () => {
 }
 
 export const reshuffleOnToggleOff = async () => {
-  const shuffled = await shuffleUpcomingInPlace()
+  const shuffled = await queueMutationCoordinator.run(shuffleUpcomingInPlace)
   if (!shuffled) return
   Spicetify.showNotification("Queue reshuffled")
 }
 
-export const refillQueueIfNeeded = async () => {
-  if (!sessionManager.isActive() || sessionManager.isRefilling()) return
+let activeRefill: Promise<void> | null = null
+
+const runRefillQueueIfNeeded = async (): Promise<void> => {
+  if (!sessionManager.isActive()) return
 
   const seed = sessionManager.getSeed()
   if (!seed) return
 
   sessionManager.setRefilling(true)
   try {
+    const revision = sessionManager.getRevision()
     const foreign = detectForeignInjection()
     if (foreign.length > 0) {
       const cleaned = getUpcomingQueueUris().filter((uri) => sessionManager.ownsQueueTrack(uri))
       const current = Spicetify.Player.data?.item?.uri
-      await replaceUpcomingQueue(current, cleaned)
+      await queueMutationCoordinator.run(() => replaceUpcomingQueue(current, cleaned))
     }
 
     const settings = getSessionConfig(seed)
@@ -562,8 +610,13 @@ export const refillQueueIfNeeded = async () => {
       .filter((uri) => !alreadyQueued.has(uri))
       .slice(0, settings.initialQueueSize)
     if (batchUris.length === 0) return
+    if (!sessionManager.isActive() || sessionManager.getRevision() !== revision) return
 
-    await appendTracksToQueue(batchUris.map((uri) => ({ uri })))
+    await queueMutationCoordinator.run(async () => {
+      if (!sessionManager.isActive() || sessionManager.getRevision() !== revision) return
+      await appendTracksToQueue(batchUris.map((uri) => ({ uri })))
+    })
+    if (!sessionManager.isActive() || sessionManager.getRevision() !== revision) return
     const merged = [...getUpcomingQueueUris(), ...batchUris]
     sessionManager.setQueuedUris(merged)
     syncKnownQueue(merged)
@@ -572,6 +625,16 @@ export const refillQueueIfNeeded = async () => {
     console.error("[Shuffle Similar] refill failed", error)
   } finally {
     sessionManager.setRefilling(false)
+  }
+}
+
+export const refillQueueIfNeeded = async (): Promise<void> => {
+  if (activeRefill) return await activeRefill
+  activeRefill = runRefillQueueIfNeeded()
+  try {
+    await activeRefill
+  } finally {
+    activeRefill = null
   }
 }
 
@@ -590,13 +653,67 @@ const rerankUpcomingAfterFeedback = async (): Promise<void> => {
     .slice(0, settings.initialQueueSize)
   if (nextUris.length === 0) return
 
-  const commit = await replaceUpcomingQueue(currentUri, nextUris)
+  const commit = await queueMutationCoordinator.run(async () => {
+    if (!sessionManager.isActive() || sessionManager.getRevision() !== revision) {
+      return { requestedUris: [], actualUris: [], verified: false }
+    }
+    return await replaceUpcomingQueue(currentUri, nextUris)
+  })
   if (!sessionManager.isActive() || sessionManager.getRevision() !== revision) return
   const committedUris = getConfirmedQueueOwnership(commit)
   if (committedUris.length === 0) return
   sessionManager.setQueuedUris(committedUris)
   syncKnownQueue(committedUris)
   persistActiveSession()
+}
+
+let playbackFailureRecovery: Promise<boolean> | null = null
+
+const getImmediateOwnedRecoveryTrack = (): string | null => {
+  const nextUri = getUpcomingQueueUris()[0]
+  return nextUri && sessionManager.ownsQueueTrack(nextUri) && !sessionManager.isQuarantined(nextUri)
+    ? nextUri
+    : null
+}
+
+/** Repairs an owned unplayable track without converting an operational
+ * failure into preference feedback. Duplicate watchdog decisions coalesce. */
+export const handlePlaybackFailure = async (uri: string): Promise<boolean> => {
+  if (playbackFailureRecovery) return await playbackFailureRecovery
+  playbackFailureRecovery = (async () => {
+    if (!sessionManager.isActive() || !sessionManager.ownsQueueTrack(uri)) return false
+    if (sessionManager.isQuarantined(uri)) return false
+
+    const observation = sessionManager.recordPlaybackFailure(uri)
+    if (observation.type !== "play-failure") return false
+    prefetchCache.clear()
+
+    try {
+      let nextOwnedUri = getImmediateOwnedRecoveryTrack()
+      if (!nextOwnedUri) await refillQueueIfNeeded()
+      if (Spicetify.Player.data?.item?.uri !== uri) return true
+      nextOwnedUri = getImmediateOwnedRecoveryTrack()
+      if (!nextOwnedUri) {
+        Spicetify.showNotification("Similar Mix could not recover this unavailable track", true)
+        return false
+      }
+      Spicetify.Player.next()
+      void rerankUpcomingAfterFeedback().catch((error) => {
+        console.warn("[Shuffle Similar] Could not refresh the queue after playback recovery", error)
+      })
+      return true
+    } catch (error) {
+      console.warn("[Shuffle Similar] Could not recover failed playback", error)
+      Spicetify.showNotification("Similar Mix could not recover this unavailable track", true)
+      return false
+    }
+  })()
+
+  try {
+    return await playbackFailureRecovery
+  } finally {
+    playbackFailureRecovery = null
+  }
 }
 
 /** Records an intentional More/Less signal. A negative signal immediately
@@ -631,7 +748,7 @@ export const handleSongChange = async (): Promise<"active" | "stopped" | "ignore
     return "stopped"
   }
   sessionManager.recordTrackPlayed(uri)
-  if (observation.rerank === "immediate") {
+  if (observation.rerank === "immediate" && observation.type !== "play-failure") {
     try {
       await rerankUpcomingAfterFeedback()
     } catch (error) {

@@ -6,9 +6,14 @@ import {
   updateNativeShuffleGuard,
 } from "./ui/nativeShuffleGuard"
 import { removeLegacyExtensionButtons } from "./ui/playbarControls"
-import { handleSongChange, recoverSimilarMixSession } from "./services/shuffleEngine"
+import {
+  handlePlaybackFailure,
+  handleSongChange,
+  recoverSimilarMixSession,
+} from "./services/shuffleEngine"
 import { sessionManager } from "./session/SessionManager"
 import { syncShuffleSimilarFromPlayback } from "./ui/shuffleSimilarUiState"
+import { PlaybackFailureWatchdog } from "./feedback/playbackFailureWatchdog"
 
 const GLOBAL_LOAD_KEY = "__shuffleSimilarExtensionLoaded__"
 const globalScope = globalThis as typeof globalThis & { [GLOBAL_LOAD_KEY]?: boolean }
@@ -29,6 +34,16 @@ const PLAYBAR_INIT_DELAY_MS = 4000
 
 let initialized = false
 let playbarInitialized = false
+const playbackFailureWatchdog = new PlaybackFailureWatchdog(
+  () => ({
+    uri: Spicetify.Player.data?.item?.uri ?? null,
+    progressMs: Spicetify.Player.getProgress(),
+    durationMs: Spicetify.Player.getDuration(),
+    isPaused: Boolean(Spicetify.Player.data?.isPaused),
+    isBuffering: Boolean(Spicetify.Player.data?.isBuffering),
+  }),
+  (uri) => { void handlePlaybackFailure(uri) }
+)
 
 const initializePlaybarFeatures = () => {
   if (playbarInitialized) return
@@ -59,6 +74,8 @@ const initializeExtension = () => {
   if (initialized) return
   initialized = true
 
+  void sessionManager.initializeTasteIdentity()
+
   tryRegisterContextMenu()
   setTimeout(tryRegisterContextMenu, 2000)
 
@@ -67,19 +84,31 @@ const initializeExtension = () => {
       enforceNativeShuffleOff()
     }
     updateNativeShuffleGuard()
+    const uri = Spicetify.Player.data?.item?.uri ?? ""
     void handleSongChange().then((result) => {
+      if ((Spicetify.Player.data?.item?.uri ?? "") !== uri) return
       if (result === "stopped") {
+        playbackFailureWatchdog.cancel()
         updateNativeShuffleGuard()
         syncShuffleSimilarFromPlayback()
+        return
       }
+      playbackFailureWatchdog.observeSongChange(uri, sessionManager.ownsQueueTrack(uri))
     })
   })
   Spicetify.Player.addEventListener("onprogress", () => {
     if (sessionManager.isActive()) {
+      const progress = Spicetify.Player.getProgress()
       sessionManager.recordProgress(
-        Spicetify.Player.getProgress(),
-        Spicetify.Player.getDuration()
+        progress,
+        Spicetify.Player.getDuration(),
+        Spicetify.Player.getRepeat() === 2
       )
+      const uri = Spicetify.Player.data?.item?.uri
+      if (uri) {
+        playbackFailureWatchdog.observeProgress(uri, progress)
+        if (progress >= 1_000) sessionManager.confirmPlayback(uri)
+      }
     }
   })
 

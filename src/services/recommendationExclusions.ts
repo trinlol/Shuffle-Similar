@@ -2,6 +2,7 @@ export type RecommendationExclusionInput = {
   playedUris: readonly string[]
   committedQueueUris: readonly string[]
   visibleQueueUris: readonly string[]
+  quarantinedUris?: readonly string[]
   purpose: "refill" | "rerank"
 }
 
@@ -16,6 +17,7 @@ export const buildRecommendationExclusions = (
   ...input.playedUris,
   ...(input.purpose === "refill" ? input.committedQueueUris : []),
   ...(input.purpose === "refill" ? input.visibleQueueUris : []),
+  ...(input.quarantinedUris ?? []),
 ])]
 
 export const buildHistoryRelaxedExclusions = (
@@ -25,4 +27,5 @@ export const buildHistoryRelaxedExclusions = (
   ...input.playedUris.slice(-Math.max(1, Math.floor(recentPlayedLimit))),
   ...input.committedQueueUris,
   ...input.visibleQueueUris,
+  ...(input.quarantinedUris ?? []),
 ])]

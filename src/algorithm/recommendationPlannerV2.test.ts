@@ -425,20 +425,22 @@ describe("production Similar Mix v2 integration", () => {
     expect(getRecommendationDiagnostics(albumBatch)?.mode).toBe("album")
   })
 
-  it("applies progressive blend phases from the absolute production position", () => {
+  it("keeps the discovery floor above the late profile-heavy blend", () => {
+    const profile = familyPool("profile", 20)
     const batch = buildTrackBatch(
       seed,
       20,
       [],
       familyPool("similar", 20),
-      familyPool("profile", 20),
+      profile,
       settings,
-      10
+      10,
+      profile.map((track) => track.uri)
     )
     const diagnostics = getRecommendationDiagnostics(batch)
 
     expect(batch).toHaveLength(10)
-    expect(diagnostics?.slate.profileCount).toBeGreaterThanOrEqual(7)
-    expect(diagnostics?.slate.similarCount).toBeLessThanOrEqual(3)
+    expect(diagnostics?.slate.discoveryEligibleCount).toBeGreaterThanOrEqual(4)
+    expect(diagnostics?.slate.profileCount).toBeLessThanOrEqual(6)
   })
 })

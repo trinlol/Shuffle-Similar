@@ -147,6 +147,29 @@ type PlaylistEntry = {
   name: string
 }
 
+export const fetchRecentlyPlayedTracks = async (): Promise<TrackCandidate[]> => {
+  try {
+    const response = await runWithTimeout(
+      () => Spicetify.CosmosAsync.get(
+        "https://api.spotify.com/v1/me/player/recently-played?limit=50"
+      ),
+      PROFILE_SOURCE_TIMEOUT_MS
+    )
+    return (response?.items ?? [])
+      .map((item: any) => item?.track)
+      .filter((track: any) => track?.uri && isWebApiTrackPlayable(track))
+      .map((track: any) => attachSourceProvenance({
+        uri: track.uri,
+        artistUri: track.artists?.[0]?.uri,
+        artistName: track.artists?.[0]?.name,
+        popularity: track.popularity,
+      }, "recently-played"))
+      .slice(0, 50)
+  } catch {
+    return []
+  }
+}
+
 type RootlistNode = { type?: string; uri?: string; name?: string; items?: RootlistNode[] }
 type PlaylistContents = {
   items?: Array<{ uri: string; isPlayable?: boolean; metadata?: Record<string, string> }>
@@ -247,6 +270,13 @@ export const fetchTopTracks = async (): Promise<string[]> => {
         ),
       PROFILE_SOURCE_TIMEOUT_MS
     ),
+      runWithTimeout<TopTracksResponse>(
+      () =>
+        Spicetify.CosmosAsync.get(
+          "https://api.spotify.com/v1/me/top/tracks?limit=50&time_range=long_term"
+        ),
+      PROFILE_SOURCE_TIMEOUT_MS
+    ),
   ])
 
   for (const result of results) {
@@ -272,13 +302,15 @@ const scorePlaylistName = (name: string, seed: SeedMetadata): number => {
 }
 
 export const fetchProfilePool = async (seed: SeedMetadata): Promise<TrackCandidate[]> => {
-  const [likedResult, playlistResult] = await Promise.allSettled([
+  const [likedResult, playlistResult, recentResult] = await Promise.allSettled([
     fetchLikedTracks(),
     fetchPlaylistEntries(),
+    fetchRecentlyPlayedTracks(),
   ])
 
   const liked = likedResult.status === "fulfilled" ? likedResult.value : []
   const playlistEntries = playlistResult.status === "fulfilled" ? playlistResult.value : []
+  const recent = recentResult.status === "fulfilled" ? recentResult.value : []
 
   const sampledPlaylists = playlistEntries
     .map((entry) => ({ uri: entry.uri, score: scorePlaylistName(entry.name, seed) }))
@@ -298,7 +330,7 @@ export const fetchProfilePool = async (seed: SeedMetadata): Promise<TrackCandida
   const shuffledLiked = sortByObscurity(liked).slice(0, 120)
   const shuffledPlaylist = sortByObscurity(playlistTracks).slice(0, 120)
 
-  return mergeCandidatesWithProvenance([...shuffledLiked, ...shuffledPlaylist]).filter(
+  return mergeCandidatesWithProvenance([...shuffledLiked, ...shuffledPlaylist, ...recent]).filter(
     (candidate) => candidate.uri !== seed.uri
   )
 }

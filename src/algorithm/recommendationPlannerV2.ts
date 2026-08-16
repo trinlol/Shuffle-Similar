@@ -50,6 +50,8 @@ export type PlanRecommendationBatchV2Options = {
   excludedUris?: readonly string[]
   queueTailUris?: readonly string[]
   topTrackUris?: ReadonlySet<string>
+  familiarUris?: ReadonlySet<string>
+  discoveryHistory?: readonly boolean[]
   settings: SmartConfig
   count: number
   absoluteStartPosition?: number
@@ -114,6 +116,11 @@ const contextAffinity = (
   references: readonly TrackCandidate[],
   eraWindow: number
 ): number | undefined => {
+  const seedDistance = seed && references.length > 0
+    ? acousticDistanceV2(acousticProfile(candidate), acousticProfile(seed))
+    : null
+  const seedAffinity = seedDistance != null ? Math.exp(-2.2 * seedDistance) : undefined
+  let referenceAffinity: number | undefined
   if (references.length > 0) {
     const distances = references
       .map((reference) => acousticDistanceV2(acousticProfile(candidate), acousticProfile(reference)))
@@ -122,9 +129,15 @@ const contextAffinity = (
       .slice(0, 5)
     if (distances.length > 0) {
       const mean = distances.reduce((sum, distance) => sum + distance, 0) / distances.length
-      return Math.exp(-2.2 * mean)
+      referenceAffinity = Math.exp(-2.2 * mean)
     }
   }
+
+  if (seedAffinity != null && referenceAffinity != null) {
+    return 0.6 * seedAffinity + 0.4 * referenceAffinity
+  }
+  if (seedAffinity != null) return seedAffinity
+  if (referenceAffinity != null) return referenceAffinity
 
   if (seed?.releaseYear != null && candidate.releaseYear != null) {
     const difference = Math.abs(candidate.releaseYear - seed.releaseYear)
@@ -408,6 +421,11 @@ export const planRecommendationBatchV2 = (
       profile: phase.profileWeight,
     })),
     queueTail,
+    familiarUris: new Set([
+      ...(options.familiarUris ?? []),
+      ...(options.topTrackUris ?? []),
+    ]),
+    discoveryHistory: options.discoveryHistory,
   })
   const tracks = plan.items
     .map((item) => candidateByUri.get(item.candidate.uri))

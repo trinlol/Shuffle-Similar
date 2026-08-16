@@ -215,6 +215,12 @@ export class BoundedCache<Key, Value> {
     }
   }
 
+  take(key: Key): Value | undefined {
+    const value = this.values.get(key)
+    this.values.delete(key)
+    return value
+  }
+
   clear(): void {
     this.values.clear()
   }

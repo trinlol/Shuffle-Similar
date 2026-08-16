@@ -42,4 +42,26 @@ describe("session recovery", () => {
     values.set("shuffleSimilar:activeSession:v1", "not json")
     expect(store.load(2_000)).toBeNull()
   })
+
+  it("migrates v1 snapshots with empty adaptive state", () => {
+    const values = new Map<string, string>()
+    values.set("shuffleSimilar:activeSession:v1", JSON.stringify({
+      version: 1,
+      savedAt: 1_000,
+      seed,
+      queuedUris: ["spotify:track:one"],
+      position: 2,
+    }))
+    const store = createSessionRecoveryStore({
+      get: (key) => values.get(key) ?? null,
+      set: (key, value) => values.set(key, value),
+      remove: (key) => values.delete(key),
+    })
+
+    expect(store.load(2_000)).toMatchObject({
+      version: 2,
+      recentPositiveAnchors: [],
+      familiarityLedger: [],
+    })
+  })
 })
