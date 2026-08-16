@@ -20,6 +20,7 @@ import {
   isPlaylistContext,
   isArtistContext,
   isAlbumContext,
+  queuePrefixMatches,
 } from "../queue/queueManager"
 import { filterPlayableUris, verifyQueuePlayability } from "../utils/playability"
 import { enforceNativeShuffleOff } from "../ui/nativeShuffleGuard"
@@ -307,6 +308,12 @@ let sessionRecoveryStore: ReturnType<typeof createSessionRecoveryStore> | null =
 const getSessionRecoveryStore = () => (sessionRecoveryStore ??= createSessionRecoveryStore())
 const prefetchCache = createPrefetchCache()
 let prefetchInFlight = false
+let prefetchGeneration = 0
+
+const invalidatePrefetch = (): void => {
+  prefetchGeneration += 1
+  prefetchCache.clear()
+}
 
 const persistActiveSession = (): void => {
   const seed = sessionManager.getSeed()
@@ -329,13 +336,18 @@ const prefetchNextBatch = async (): Promise<void> => {
   const settings = getSessionConfig(seed)
   if (getUpcomingCount() >= settings.refillThreshold + 8) return
   const revision = sessionManager.getRevision()
-  if (prefetchCache.has(revision)) return
+  const generation = prefetchGeneration
+  if (prefetchCache.has(revision, generation)) return
 
   prefetchInFlight = true
   try {
     const { playableQueueUris } = await buildPlayableBatch(seed, false)
-    if (sessionManager.isActive() && sessionManager.getRevision() === revision) {
-      prefetchCache.save({ revision, uris: playableQueueUris })
+    if (
+      sessionManager.isActive() &&
+      sessionManager.getRevision() === revision &&
+      prefetchGeneration === generation
+    ) {
+      prefetchCache.save({ revision, generation, uris: playableQueueUris })
     }
   } catch (error) {
     // Prefetch is purely an optimisation; foreground refill remains authoritative.
@@ -515,7 +527,7 @@ export const startShuffleSimilar = async (
   if (options.buildOnly) return result
 
   await liveMixCoordinator.commit(generation!, async () => {
-    prefetchCache.clear()
+    invalidatePrefetch()
     sessionManager.invalidatePendingMutations()
     const currentUri = Spicetify.Player.data?.item?.uri ?? null
     const queueCommit = await queueMutationCoordinator.run(async () =>
@@ -530,7 +542,14 @@ export const startShuffleSimilar = async (
           : await replaceUpcomingQueue(currentUri ?? seed.uri, prepared.queueUris)
     )
     if (!queueCommit.verified) {
-      const error = new Error("Spotify did not confirm the Similar Mix queue")
+      const prefixStatus = queuePrefixMatches(
+        queueCommit.requestedUris,
+        queueCommit.actualUris
+      ) ? "ordered prefix matched" : "ordered prefix differed"
+      const error = new Error(
+        `Spotify did not confirm the Similar Mix queue ` +
+        `(${queueCommit.actualUris.length}/${queueCommit.requestedUris.length} visible; ${prefixStatus})`
+      )
       ;(error as Error & { code?: string }).code = "SERVICE_UNAVAILABLE"
       throw error
     }
@@ -600,10 +619,14 @@ const runRefillQueueIfNeeded = async (): Promise<void> => {
     }
 
     const settings = getSessionConfig(seed)
-    const upcoming = getUpcomingCount()
+    const ownedUpcoming = sessionManager.getQueuedUris()
+    const upcoming = ownedUpcoming.length
     if (upcoming >= settings.refillThreshold) return
 
-    const playableQueueUris = prefetchCache.take(sessionManager.getRevision())
+    const playableQueueUris = prefetchCache.take(
+      sessionManager.getRevision(),
+      prefetchGeneration
+    )
       ?? (await buildPlayableBatch(seed, false)).playableQueueUris
     const alreadyQueued = new Set(getUpcomingQueueUris())
     const batchUris = playableQueueUris
@@ -617,7 +640,9 @@ const runRefillQueueIfNeeded = async (): Promise<void> => {
       await appendTracksToQueue(batchUris.map((uri) => ({ uri })))
     })
     if (!sessionManager.isActive() || sessionManager.getRevision() !== revision) return
-    const merged = [...getUpcomingQueueUris(), ...batchUris]
+    // Spotify may append context/autoplay entries after the owned prefix.
+    // Keep those visible for playback, but never count or adopt them as ours.
+    const merged = [...ownedUpcoming, ...batchUris]
     sessionManager.setQueuedUris(merged)
     syncKnownQueue(merged)
     persistActiveSession()
@@ -643,7 +668,7 @@ const rerankUpcomingAfterFeedback = async (): Promise<void> => {
   if (!seed || !sessionManager.isActive()) return
 
   const revision = sessionManager.getRevision()
-  prefetchCache.clear()
+  invalidatePrefetch()
   const { playableQueueUris, settings } = await buildPlayableBatch(seed, false, false)
   if (!sessionManager.isActive() || sessionManager.getRevision() !== revision) return
 
@@ -686,7 +711,7 @@ export const handlePlaybackFailure = async (uri: string): Promise<boolean> => {
 
     const observation = sessionManager.recordPlaybackFailure(uri)
     if (observation.type !== "play-failure") return false
-    prefetchCache.clear()
+    invalidatePrefetch()
 
     try {
       let nextOwnedUri = getImmediateOwnedRecoveryTrack()
@@ -726,7 +751,7 @@ export const teachSimilarMixPreference = async (
   const candidate = sessionManager.getCandidate(uri) ?? await fetchSeedMetadata(uri)
   sessionManager.registerCandidates([candidate])
   sessionManager.recordExplicitFeedback(candidate, sentiment)
-  prefetchCache.clear()
+  invalidatePrefetch()
   if (sentiment < 0 && sessionManager.isActive()) {
     await rerankUpcomingAfterFeedback()
   }
@@ -744,17 +769,11 @@ export const handleSongChange = async (): Promise<"active" | "stopped" | "ignore
     disableAutoplayGuard()
     sessionManager.endSession()
     clearSimilarMixRecovery()
-    prefetchCache.clear()
+    invalidatePrefetch()
     return "stopped"
   }
   sessionManager.recordTrackPlayed(uri)
-  if (observation.rerank === "immediate" && observation.type !== "play-failure") {
-    try {
-      await rerankUpcomingAfterFeedback()
-    } catch (error) {
-      console.warn("[Shuffle Similar] Could not adapt the upcoming queue", error)
-    }
-  }
+  if (observation.type === "early-skip") invalidatePrefetch()
   await refillQueueIfNeeded()
   void prefetchNextBatch()
   return "active"

@@ -2,6 +2,18 @@
 
 All notable changes to Shuffle Similar are documented in this file.
 
+## [2.1.1] - 2026-08-16
+
+### Fixed
+
+- Accepts Spotify context or autoplay tracks appended after the complete, correctly ordered Similar Mix without mistaking them for a failed queue takeover
+- Keeps appended Spotify context tracks outside Similar Mix ownership and refill counts
+- Continues to retry or reject a takeover when a foreign track interrupts the requested Similar Mix order
+- Ignores unrelated stale private queue snapshots when Spotify's public queue already confirms the requested mix
+- Defers automatic early-skip reranking until a safe refill so pressing Next cannot replace Spotify's queue during `songchange`
+- Invalidates cached and in-flight prefetch generations after an early skip so the next safe refill uses the new taste signal
+- Shows the underlying context-menu failure reason instead of a generic start error
+
 ## [2.1.0] - 2026-08-16
 
 ### Added

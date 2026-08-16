@@ -293,9 +293,10 @@ export const queuePrefixMatches = (expected: string[], actual: string[], limit =
   if (expected.length === 0) return actual.length === 0
   const requiredPrefixLength = Math.min(expected.length, Math.max(1, limit))
   if (actual.length < requiredPrefixLength) return false
-  return expected
-    .slice(0, requiredPrefixLength)
-    .every((uri, index) => actual[index] === uri)
+  for (let index = 0; index < requiredPrefixLength; index += 1) {
+    if (actual[index] !== expected[index]) return false
+  }
+  return true
 }
 
 export const queueSnapshotMatchesRequested = (
@@ -308,6 +309,24 @@ export const queueSnapshotMatchesRequested = (
   return actual.every((uri, index) => expected[index] === uri)
 }
 
+/** Spotify may append context/autoplay tracks after a manually queued mix.
+ * They are harmless once the complete requested mix is visible in order;
+ * foreign entries before that boundary still invalidate the takeover. */
+export const queueTakeoverSnapshotMatches = (
+  expected: string[],
+  actual: string[],
+  limit = 8
+): boolean => {
+  if (!queuePrefixMatches(expected, actual, limit)) return false
+
+  const observedRequestedCount = Math.min(expected.length, actual.length)
+  for (let index = 0; index < observedRequestedCount; index += 1) {
+    if (actual[index] !== expected[index]) return false
+  }
+
+  return true
+}
+
 const waitForQueueConvergence = async (
   expected: string[],
   options: { strict?: boolean; stableReads?: number } = {}
@@ -318,8 +337,14 @@ const waitForQueueConvergence = async (
     return { requestedUris, actualUris, verified: actualUris.length === 0 }
   }
 
-  const matches = options.strict ? queueSnapshotMatchesRequested : queuePrefixMatches
+  const matches = options.strict
+      ? (expectedUris: string[], actualUris: string[]) => queueTakeoverSnapshotMatches(
+          expectedUris,
+          actualUris
+        )
+    : queuePrefixMatches
   const requiredStableReads = Math.max(1, options.stableReads ?? 1)
+  const requestedSet = new Set(requestedUris)
   let stableReads = 0
   let previousSnapshot = ""
   for (let attempt = 0; attempt < 10; attempt += 1) {
@@ -329,7 +354,11 @@ const waitForQueueConvergence = async (
     const comparable = publicUris.length > 0 ? publicUris : privateUris
     actualUris = comparable
     const publicMatches = publicUris.length === 0 || matches(requestedUris, publicUris)
-    const privateMatches = privateUris.length === 0 || matches(requestedUris, privateUris)
+    const privateSnapshotIsRelevant =
+      publicUris.length < requestedUris.length &&
+      privateUris.some((uri) => requestedSet.has(uri))
+    const privateMatches =
+      !privateSnapshotIsRelevant || matches(requestedUris, privateUris)
     const converged = options.strict
       ? publicMatches && privateMatches && comparable.length > 0
       : matches(requestedUris, comparable)
@@ -420,12 +449,15 @@ export const replaceUpcomingQueueForNewMix = async (
       if (previousUris.length > 0) await addTracksSafe(previousUris).catch(() => undefined)
       throw error
     }
-    lastCommit = await waitForQueueConvergence(tracks, { strict: true, stableReads: 2 })
+    lastCommit = await waitForQueueConvergence(tracks, {
+      strict: true,
+      stableReads: 2,
+    })
     if (lastCommit.verified) {
       await wait(250)
       const guardedSnapshot = getRawUpcomingQueueUris()
         .filter((uri) => uri.startsWith("spotify:track:"))
-      if (queueSnapshotMatchesRequested(tracks, guardedSnapshot)) {
+      if (queueTakeoverSnapshotMatches(tracks, guardedSnapshot)) {
         return { ...lastCommit, actualUris: guardedSnapshot }
       }
       lastCommit = { ...lastCommit, actualUris: guardedSnapshot, verified: false }

@@ -90,7 +90,7 @@ type TeachingObservation<Kind extends TastePlaybackOutcome["type"]> = Observatio
     context: PlaybackContext
     metrics: PlaybackMetrics
     tasteOutcome: TastePlaybackOutcome & { type: Kind }
-    rerank: Kind extends "early-skip" ? "immediate" : "none"
+    rerank: "none"
   }>
 
 export type CompletionObservation = TeachingObservation<"completion">
@@ -160,7 +160,10 @@ const teachingObservation = <Kind extends TastePlaybackOutcome["type"]>(
     genres: transition.previous.context.genres,
     occurredAt,
   },
-  rerank: (type === "early-skip" ? "immediate" : "none") as TeachingObservation<Kind>["rerank"],
+  // Queue mutation during Spotify's songchange/Skip transition can invalidate
+  // the track the player is resolving. The taste signal is persisted now and
+  // naturally affects the next safe refill instead.
+  rerank: "none",
 })
 
 /**

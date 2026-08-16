@@ -35,6 +35,16 @@ export const detectForeignInjection = (): string[] => {
     return []
   }
 
+  const ownedQueue = sessionManager.getQueuedUris()
+  const completeOwnedPrefix =
+    ownedQueue.length > 0 &&
+    current.length >= ownedQueue.length &&
+    ownedQueue.every((uri, index) => current[index] === uri)
+  if (completeOwnedPrefix) {
+    lastKnownQueue = serializeQueue(ownedQueue)
+    return []
+  }
+
   const cleaned = current.filter((uri) => sessionManager.ownsQueueTrack(uri))
   lastKnownQueue = serializeQueue(cleaned.length > 0 ? cleaned : previous)
   return foreign

@@ -188,14 +188,17 @@ describe("queuePrefixMatches", () => {
     ])
   })
 
-  it("retries a fresh takeover once when Spotify reinjects an old queue track", async () => {
+  it("retries a fresh takeover when an old track appears before the new mix completes", async () => {
     const nextTracks: Array<{ uri: string }> = [{ uri: "spotify:track:old" }]
     let installAttempt = 0
     const clearQueue = vi.fn(async () => nextTracks.splice(0))
     const addToQueue = vi.fn(async (items: Array<{ uri: string }>) => {
       installAttempt += 1
-      nextTracks.push(...items)
-      if (installAttempt === 1) nextTracks.push({ uri: "spotify:track:old" })
+      if (installAttempt === 1) {
+        nextTracks.push(items[0], { uri: "spotify:track:old" }, ...items.slice(1))
+      } else {
+        nextTracks.push(...items)
+      }
     })
 
     vi.stubGlobal("Spicetify", {
@@ -226,9 +229,54 @@ describe("queuePrefixMatches", () => {
     ])
   })
 
-  it("rejects a hydrated public prefix while the private queue still has an old tail", async () => {
+  it("accepts Spotify context tracks appended after the complete new mix", async () => {
+    const nextTracks: Array<{ uri: string }> = [
+      { uri: "spotify:track:old" },
+      { uri: "spotify:track:context-one" },
+    ]
+    const contextTail = [
+      { uri: "spotify:track:context-one" },
+      { uri: "spotify:track:context-two" },
+    ]
+    const clearQueue = vi.fn(async () => nextTracks.splice(0))
+    const addToQueue = vi.fn(async (items: Array<{ uri: string }>) => {
+      nextTracks.push(...items, ...contextTail)
+    })
+
+    vi.stubGlobal("Spicetify", {
+      Queue: { nextTracks },
+      Player: {
+        data: { item: { uri: "spotify:track:current" }, context: { uri: "spotify:album:current" } },
+        getShuffle: () => false,
+      },
+      URI: {
+        Type: { PLAYLIST: "playlist", PLAYLIST_V2: "playlist-v2", ALBUM: "album", ARTIST: "artist" },
+        fromString: (uri: string) => ({ type: uri.split(":")[1] }),
+      },
+      Platform: { PlayerAPI: { clearQueue, addToQueue } },
+    })
+
+    const commit = await replaceUpcomingQueueForNewMix(
+      "spotify:track:current",
+      ["spotify:track:new-one", "spotify:track:new-two"],
+      "spotify:album:current"
+    )
+
+    expect(commit.verified).toBe(true)
+    expect(clearQueue).toHaveBeenCalledTimes(1)
+    expect(nextTracks).toEqual([
+      { uri: "spotify:track:new-one" },
+      { uri: "spotify:track:new-two" },
+      ...contextTail,
+    ])
+  })
+
+  it("rejects a hydrated public prefix while the private queue interrupts the requested order", async () => {
     const nextTracks: Array<{ uri: string }> = [{ uri: "spotify:track:old" }]
     const privateTracks: Array<{ uri: string }> = [{ uri: "spotify:track:old" }]
+    const requested = Array.from({ length: 10 }, (_, index) => ({
+      uri: `spotify:track:new-${index}`,
+    }))
     let installAttempt = 0
     const clearQueue = vi.fn(async () => {
       nextTracks.splice(0)
@@ -236,9 +284,11 @@ describe("queuePrefixMatches", () => {
     })
     const addToQueue = vi.fn(async (items: Array<{ uri: string }>) => {
       installAttempt += 1
-      nextTracks.push(...items)
+      nextTracks.push(...items.slice(0, 8))
       privateTracks.push(...items)
-      if (installAttempt === 1) privateTracks.push({ uri: "spotify:track:old" })
+      if (installAttempt === 1) {
+        privateTracks.splice(8, 0, { uri: "spotify:track:old" })
+      }
     })
 
     vi.stubGlobal("Spicetify", {
@@ -262,13 +312,54 @@ describe("queuePrefixMatches", () => {
 
     const commit = await replaceUpcomingQueueForNewMix(
       "spotify:track:current",
-      ["spotify:track:new-one", "spotify:track:new-two"],
+      requested.map(({ uri }) => uri),
       "spotify:album:current"
     )
 
     expect(commit.verified).toBe(true)
     expect(clearQueue).toHaveBeenCalledTimes(2)
-    expect(privateTracks).toEqual(nextTracks)
+    expect(privateTracks).toEqual(requested)
+  })
+
+  it("accepts a stable public queue while an unrelated private snapshot is stale", async () => {
+    const nextTracks: Array<{ uri: string }> = [{ uri: "spotify:track:old" }]
+    const stalePrivateTracks: Array<{ uri: string }> = [{ uri: "spotify:track:old" }]
+    const clearQueue = vi.fn(async () => nextTracks.splice(0))
+    const addToQueue = vi.fn(async (items: Array<{ uri: string }>) => {
+      nextTracks.push(...items)
+    })
+
+    vi.stubGlobal("Spicetify", {
+      Queue: { nextTracks },
+      Player: {
+        data: { item: { uri: "spotify:track:current" }, context: { uri: "spotify:album:current" } },
+        getShuffle: () => false,
+      },
+      URI: {
+        Type: { PLAYLIST: "playlist", PLAYLIST_V2: "playlist-v2", ALBUM: "album", ARTIST: "artist" },
+        fromString: (uri: string) => ({ type: uri.split(":")[1] }),
+      },
+      Platform: {
+        PlayerAPI: {
+          clearQueue,
+          addToQueue,
+          _queue: { _queueState: { nextTracks: stalePrivateTracks } },
+        },
+      },
+    })
+
+    const commit = await replaceUpcomingQueueForNewMix(
+      "spotify:track:current",
+      ["spotify:track:new-one", "spotify:track:new-two"],
+      "spotify:album:current"
+    )
+
+    expect(commit.verified).toBe(true)
+    expect(clearQueue).toHaveBeenCalledTimes(1)
+    expect(nextTracks).toEqual([
+      { uri: "spotify:track:new-one" },
+      { uri: "spotify:track:new-two" },
+    ])
   })
 
   it("restores the previous queue when a fresh install fails after clearing", async () => {

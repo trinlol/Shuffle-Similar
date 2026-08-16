@@ -113,7 +113,7 @@ describe("playback transition classifier", () => {
 
     expect(observation.type).toBe("early-skip")
     expect(observation.tasteOutcome?.type).toBe("early-skip")
-    expect(observation.rerank).toBe("immediate")
+    expect(observation.rerank).toBe("none")
   })
 
   it("treats a switch to a non-owned track as a manual context exit, never a skip", () => {
@@ -242,7 +242,7 @@ describe("playback transition classifier", () => {
         genres: ["indie pop"],
         occurredAt: NOW,
       },
-      rerank: "immediate",
+      rerank: "none",
     })
     expect(clock).toHaveBeenCalledTimes(1)
     expect(input).toEqual(original)

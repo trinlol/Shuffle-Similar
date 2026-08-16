@@ -13,6 +13,12 @@ import { sessionManager } from "../session/SessionManager"
 let contextMenuRegistered = false
 let contextActionBusy = false
 
+const formatContextActionError = (error: unknown, fallbackMessage: string): string => {
+  const reason = error instanceof Error ? error.message.trim() : ""
+  if (!reason) return fallbackMessage
+  return `Similar Mix: ${reason.slice(0, 180)}`
+}
+
 const runContextAction = (work: () => Promise<void>, fallbackMessage: string) => {
   if (contextActionBusy) {
     Spicetify.showNotification("Similar Mix is already working on that request")
@@ -23,7 +29,7 @@ const runContextAction = (work: () => Promise<void>, fallbackMessage: string) =>
     work()
       .catch((error) => {
         console.error("[Shuffle Similar]", error)
-        Spicetify.showNotification(fallbackMessage, true)
+        Spicetify.showNotification(formatContextActionError(error, fallbackMessage), true)
       })
       .finally(() => { contextActionBusy = false })
   }, 100)
