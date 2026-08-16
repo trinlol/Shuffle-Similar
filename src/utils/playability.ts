@@ -153,10 +153,19 @@ export const verifyQueuePlayability = async (
   )
   await Promise.all(workers)
 
+  const acceptedUris = uniqueUris.filter((uri) => !rejected.has(uri))
+  const verifiedPlayableUris = acceptedUris.filter((uri) => checked.has(uri))
+  const uncheckedUris = acceptedUris.filter((uri) => unchecked.has(uri))
+
   return {
-    playableUris: uniqueUris.filter((uri) => !rejected.has(uri)),
+    // A transiently failed probe is still allowed as a degraded fallback, but
+    // it must not be the first track Spotify reaches on Skip when positively
+    // verified alternatives exist. Preserve ranking within both groups.
+    playableUris: verifiedPlayableUris.length > 0
+      ? [...verifiedPlayableUris, ...uncheckedUris]
+      : uncheckedUris,
     rejectedUris: uniqueUris.filter((uri) => rejected.has(uri)),
-    uncheckedUris: uniqueUris.filter((uri) => unchecked.has(uri)),
+    uncheckedUris,
     checkedUris: uniqueUris.filter((uri) => checked.has(uri)),
     degraded,
   }

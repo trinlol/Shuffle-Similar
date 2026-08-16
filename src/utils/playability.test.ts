@@ -50,6 +50,37 @@ describe("verifyQueuePlayability", () => {
     expect(result.degraded).toBe(true)
   })
 
+  it("keeps verified playable tracks ahead of transiently unchecked tracks", async () => {
+    vi.stubGlobal("Spicetify", {
+      Locale: { getLocale: () => "en_GB" },
+      CosmosAsync: {
+        get: vi.fn(async (url: string) => {
+          const id = url.split("/").pop()?.split("?")[0]
+          if (id === "unchecked") throw new Error("temporary validation failure")
+          return { uri: `spotify:track:${id}`, is_playable: true }
+        }),
+      },
+    })
+
+    const result = await verifyQueuePlayability([
+      "spotify:track:unchecked",
+      "spotify:track:verified-one",
+      "spotify:track:verified-two",
+    ])
+
+    expect(result.playableUris).toEqual([
+      "spotify:track:verified-one",
+      "spotify:track:verified-two",
+      "spotify:track:unchecked",
+    ])
+    expect(result.checkedUris).toEqual([
+      "spotify:track:verified-one",
+      "spotify:track:verified-two",
+    ])
+    expect(result.uncheckedUris).toEqual(["spotify:track:unchecked"])
+    expect(result.degraded).toBe(true)
+  })
+
   it("bounds validation work to the queue head so startup remains responsive", async () => {
     const get = vi.fn(async (url: string) => ({
       uri: `spotify:track:${url.split("/").pop()?.split("?")[0]}`,

@@ -27,7 +27,7 @@ const buildOptions = {
   jsxFragment: "Spicetify.React.Fragment",
   logLevel: "info",
   banner: {
-    js: "// NAME: Shuffle Similar\n// DESCRIPTION: Adaptive, source-resilient Similar Mix queues with private automatic learning\n// VERSION: 2.0.0\n// AUTHORS: Shuffle Similar Contributors\n",
+    js: "// NAME: Shuffle Similar\n// DESCRIPTION: Adaptive, source-resilient Similar Mix queues with private automatic learning\n// VERSION: 2.0.1\n// AUTHORS: Shuffle Similar Contributors\n",
   },
 }
 

@@ -2,6 +2,12 @@
 
 All notable changes to Shuffle Similar are documented in this file.
 
+## [2.0.1] - 2026-08-16
+
+### Fixed
+
+- Verified playable tracks now lead the generated queue when individual validation requests fail, preventing the first Skip from landing on a transiently unchecked song
+
 ## [2.0.0] - 2026-08-16
 
 ### Added
