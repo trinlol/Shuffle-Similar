@@ -119,7 +119,8 @@ describe("restricted Spotify source compatibility", () => {
       if (url.includes("inspiredby-mix")) {
         return { mediaItems: [{ uri: "spotify:playlist:inspired" }] }
       }
-      if (url.includes("/v1/tracks/")) return webTrack(url.split("/").pop()?.split("?")[0] ?? "metadata")
+      if (url.includes("/v1/tracks/"))
+        return webTrack(url.split("/").pop()?.split("?")[0] ?? "metadata")
       throw new Error(`Unexpected URL: ${url}`)
     })
     const radioDefinition = { name: "radio" }
@@ -192,9 +193,9 @@ describe("restricted Spotify source compatibility", () => {
     )
     expect(second.length).toBeGreaterThan(0)
     expect(optionalCalls).toEqual({ recommendations: 1, related: 1, features: 1 })
-    expect(getSourceProvenance(first.find((track) => track.uri === "spotify:track:radio")!)).toContain(
-      "radio"
-    )
+    expect(
+      getSourceProvenance(first.find((track) => track.uri === "spotify:track:radio")!)
+    ).toContain("radio")
     expect(
       getSpotifySourceDiagnostics().capabilities.map(({ capability, status }) => ({
         capability,

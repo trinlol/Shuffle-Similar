@@ -34,7 +34,9 @@ export class LatestMixCoordinator {
   async commit<T>(token: number, work: () => Promise<T>): Promise<T> {
     const previous = this.commitTail
     let release: () => void = () => undefined
-    this.commitTail = new Promise<void>((resolve) => { release = resolve })
+    this.commitTail = new Promise<void>((resolve) => {
+      release = resolve
+    })
 
     await previous.catch(() => undefined)
     try {

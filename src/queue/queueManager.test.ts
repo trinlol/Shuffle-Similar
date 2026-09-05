@@ -5,9 +5,9 @@ import {
   playTrack,
   queuePrefixMatches,
   queueSnapshotMatchesRequested,
+  replaceQueue,
   replaceUpcomingQueue,
   replaceUpcomingQueueForNewMix,
-  replaceQueue,
 } from "./queueManager"
 
 afterEach(() => {
@@ -74,18 +74,24 @@ describe("queuePrefixMatches", () => {
 
   it("rejects reordered or duplicated entries beyond the hydration quorum", () => {
     const expected = Array.from({ length: 10 }, (_, index) => `spotify:track:${index}`)
-    expect(queueSnapshotMatchesRequested(expected, [...expected.slice(0, 8), expected[9]])).toBe(false)
-    expect(queueSnapshotMatchesRequested(expected, [...expected.slice(0, 8), expected[7]])).toBe(false)
+    expect(queueSnapshotMatchesRequested(expected, [...expected.slice(0, 8), expected[9]])).toBe(
+      false
+    )
+    expect(queueSnapshotMatchesRequested(expected, [...expected.slice(0, 8), expected[7]])).toBe(
+      false
+    )
     expect(queueSnapshotMatchesRequested(expected, expected.slice(0, 9))).toBe(true)
   })
 
   it("keeps all requested tracks owned after a partial hydration quorum", () => {
     const requestedUris = Array.from({ length: 50 }, (_, index) => `spotify:track:${index}`)
-    expect(getConfirmedQueueOwnership({
-      requestedUris,
-      actualUris: requestedUris.slice(0, 8),
-      verified: true,
-    })).toEqual(requestedUris)
+    expect(
+      getConfirmedQueueOwnership({
+        requestedUris,
+        actualUris: requestedUris.slice(0, 8),
+        verified: true,
+      })
+    ).toEqual(requestedUris)
   })
 
   it("times out a stuck queue clear", async () => {
@@ -152,7 +158,12 @@ describe("queuePrefixMatches", () => {
       Queue: { nextTracks },
       Player: { data: playerData, getShuffle: () => false },
       URI: {
-        Type: { PLAYLIST: "playlist", PLAYLIST_V2: "playlist-v2", ALBUM: "album", ARTIST: "artist" },
+        Type: {
+          PLAYLIST: "playlist",
+          PLAYLIST_V2: "playlist-v2",
+          ALBUM: "album",
+          ARTIST: "artist",
+        },
         fromString: (uri: string) => ({ type: uri.split(":")[1] }),
       },
       Platform: {
@@ -182,10 +193,7 @@ describe("queuePrefixMatches", () => {
 
     expect(commit.verified).toBe(true)
     expect(operations).toEqual(["detach-context", "clear-queue", "add-new-mix"])
-    expect(nextTracks).toEqual([
-      { uri: "spotify:track:new-one" },
-      { uri: "spotify:track:new-two" },
-    ])
+    expect(nextTracks).toEqual([{ uri: "spotify:track:new-one" }, { uri: "spotify:track:new-two" }])
   })
 
   it("retries a fresh takeover when an old track appears before the new mix completes", async () => {
@@ -208,7 +216,12 @@ describe("queuePrefixMatches", () => {
         getShuffle: () => false,
       },
       URI: {
-        Type: { PLAYLIST: "playlist", PLAYLIST_V2: "playlist-v2", ALBUM: "album", ARTIST: "artist" },
+        Type: {
+          PLAYLIST: "playlist",
+          PLAYLIST_V2: "playlist-v2",
+          ALBUM: "album",
+          ARTIST: "artist",
+        },
         fromString: (uri: string) => ({ type: uri.split(":")[1] }),
       },
       Platform: { PlayerAPI: { clearQueue, addToQueue } },
@@ -223,10 +236,7 @@ describe("queuePrefixMatches", () => {
     expect(commit.verified).toBe(true)
     expect(clearQueue).toHaveBeenCalledTimes(2)
     expect(addToQueue).toHaveBeenCalledTimes(2)
-    expect(nextTracks).toEqual([
-      { uri: "spotify:track:new-one" },
-      { uri: "spotify:track:new-two" },
-    ])
+    expect(nextTracks).toEqual([{ uri: "spotify:track:new-one" }, { uri: "spotify:track:new-two" }])
   })
 
   it("accepts Spotify context tracks appended after the complete new mix", async () => {
@@ -234,10 +244,7 @@ describe("queuePrefixMatches", () => {
       { uri: "spotify:track:old" },
       { uri: "spotify:track:context-one" },
     ]
-    const contextTail = [
-      { uri: "spotify:track:context-one" },
-      { uri: "spotify:track:context-two" },
-    ]
+    const contextTail = [{ uri: "spotify:track:context-one" }, { uri: "spotify:track:context-two" }]
     const clearQueue = vi.fn(async () => nextTracks.splice(0))
     const addToQueue = vi.fn(async (items: Array<{ uri: string }>) => {
       nextTracks.push(...items, ...contextTail)
@@ -250,7 +257,12 @@ describe("queuePrefixMatches", () => {
         getShuffle: () => false,
       },
       URI: {
-        Type: { PLAYLIST: "playlist", PLAYLIST_V2: "playlist-v2", ALBUM: "album", ARTIST: "artist" },
+        Type: {
+          PLAYLIST: "playlist",
+          PLAYLIST_V2: "playlist-v2",
+          ALBUM: "album",
+          ARTIST: "artist",
+        },
         fromString: (uri: string) => ({ type: uri.split(":")[1] }),
       },
       Platform: { PlayerAPI: { clearQueue, addToQueue } },
@@ -298,7 +310,12 @@ describe("queuePrefixMatches", () => {
         getShuffle: () => false,
       },
       URI: {
-        Type: { PLAYLIST: "playlist", PLAYLIST_V2: "playlist-v2", ALBUM: "album", ARTIST: "artist" },
+        Type: {
+          PLAYLIST: "playlist",
+          PLAYLIST_V2: "playlist-v2",
+          ALBUM: "album",
+          ARTIST: "artist",
+        },
         fromString: (uri: string) => ({ type: uri.split(":")[1] }),
       },
       Platform: {
@@ -336,7 +353,12 @@ describe("queuePrefixMatches", () => {
         getShuffle: () => false,
       },
       URI: {
-        Type: { PLAYLIST: "playlist", PLAYLIST_V2: "playlist-v2", ALBUM: "album", ARTIST: "artist" },
+        Type: {
+          PLAYLIST: "playlist",
+          PLAYLIST_V2: "playlist-v2",
+          ALBUM: "album",
+          ARTIST: "artist",
+        },
         fromString: (uri: string) => ({ type: uri.split(":")[1] }),
       },
       Platform: {
@@ -356,10 +378,7 @@ describe("queuePrefixMatches", () => {
 
     expect(commit.verified).toBe(true)
     expect(clearQueue).toHaveBeenCalledTimes(1)
-    expect(nextTracks).toEqual([
-      { uri: "spotify:track:new-one" },
-      { uri: "spotify:track:new-two" },
-    ])
+    expect(nextTracks).toEqual([{ uri: "spotify:track:new-one" }, { uri: "spotify:track:new-two" }])
   })
 
   it("restores the previous queue when a fresh install fails after clearing", async () => {
@@ -377,17 +396,24 @@ describe("queuePrefixMatches", () => {
         getShuffle: () => false,
       },
       URI: {
-        Type: { PLAYLIST: "playlist", PLAYLIST_V2: "playlist-v2", ALBUM: "album", ARTIST: "artist" },
+        Type: {
+          PLAYLIST: "playlist",
+          PLAYLIST_V2: "playlist-v2",
+          ALBUM: "album",
+          ARTIST: "artist",
+        },
         fromString: (uri: string) => ({ type: uri.split(":")[1] }),
       },
       Platform: { PlayerAPI: { clearQueue, addToQueue } },
     })
 
-    await expect(replaceUpcomingQueueForNewMix(
-      "spotify:track:current",
-      ["spotify:track:new"],
-      "spotify:album:current"
-    )).rejects.toThrow("install failed")
+    await expect(
+      replaceUpcomingQueueForNewMix(
+        "spotify:track:current",
+        ["spotify:track:new"],
+        "spotify:album:current"
+      )
+    ).rejects.toThrow("install failed")
     expect(nextTracks).toEqual([{ uri: "spotify:track:old" }])
     expect(clearQueue).toHaveBeenCalledTimes(2)
   })

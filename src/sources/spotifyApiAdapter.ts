@@ -1,7 +1,4 @@
-export type OptionalSpotifyCapability =
-  | "recommendations"
-  | "related-artists"
-  | "audio-features"
+export type OptionalSpotifyCapability = "recommendations" | "related-artists" | "audio-features"
 
 export type OptionalCapabilityResult<T> =
   | { status: "ok"; value: T }
@@ -59,10 +56,13 @@ export const runWithTimeout = async <T>(
   const controller = new AbortController()
   let timer: ReturnType<typeof setTimeout> | undefined
   const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => {
-      controller.abort()
-      reject(new SourceTimeoutError())
-    }, Math.max(1, timeoutMs))
+    timer = setTimeout(
+      () => {
+        controller.abort()
+        reject(new SourceTimeoutError())
+      },
+      Math.max(1, timeoutMs)
+    )
   })
 
   try {

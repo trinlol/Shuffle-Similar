@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Verify the committed bundle banner matches package.json
+        run: npm run check:bundle
+
+      - name: Verify the committed bundle is rebuilt from current sources
+        run: |
+          npm run build:release
+          if ! git diff --quiet -- shuffle-similar.js; then
+            echo "::error::shuffle-similar.js is out of date. Run 'npm run build:release' and commit the result."
+            git diff -- shuffle-similar.js
+            exit 1
+          fi

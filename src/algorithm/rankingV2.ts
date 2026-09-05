@@ -38,13 +38,7 @@ export type RankableCandidate = {
   }
 }
 
-export type ScoreComponent =
-  | "fusion"
-  | "context"
-  | "taste"
-  | "acoustic"
-  | "novelty"
-  | "feedback"
+export type ScoreComponent = "fusion" | "context" | "taste" | "acoustic" | "novelty" | "feedback"
 
 export type RankV2Options = {
   sourceWeights?: Record<string, number>
@@ -178,9 +172,7 @@ const finiteWeight = (value: number | undefined, fallback: number): number =>
   typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : fallback
 
 const unitValue = (value: number | undefined): number | null =>
-  typeof value === "number" && Number.isFinite(value)
-    ? Math.max(0, Math.min(1, value))
-    : null
+  typeof value === "number" && Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : null
 
 const buildBreakdown = (
   values: Record<ScoreComponent, number | null>,
@@ -208,10 +200,7 @@ const buildBreakdown = (
     effectiveWeights[component] = effective
     contributions[component] = (values[component] ?? 0) * effective
   }
-  const total = SCORE_COMPONENTS.reduce(
-    (sum, component) => sum + contributions[component],
-    0
-  )
+  const total = SCORE_COMPONENTS.reduce((sum, component) => sum + contributions[component], 0)
 
   return { values, baseWeights, effectiveWeights, contributions, availableWeight, total }
 }
@@ -295,22 +284,37 @@ const normalizedText = (value: string): string =>
     .trim()
     .replace(/\s+/g, " ")
 
+/** Qualifiers Spotify places before a version noun, as in
+ * "Song - Single Version" or "Song - Original Mix". Matching the noun alone
+ * left these titles looking like distinct tracks. */
+const VERSION_QUALIFIERS =
+  "(?:single|album|original|extended|deluxe|alternate|alternative|instrumental|club|full|short|expanded|anniversary|special|bonus)"
+
+const VERSION_NOUNS =
+  "(?:remaster(?:ed)?|live|radio edit|edit|version|mix|mono|stereo|acoustic|demo|session|bonus track)"
+
 export const canonicalizeTrackTitle = (title: string | undefined): string => {
   if (!title) return ""
   const withoutVersionTags = title
     .replace(
-      /\s*[\[(][^)\]]*(?:remaster(?:ed)?|live|radio edit|edit|version|mix|mono|stereo|acoustic|demo|session)[^)\]]*[)\]]/gi,
+      new RegExp(
+        `\\s*[\\[(][^)\\]]*(?:${VERSION_QUALIFIERS}\\s+)?${VERSION_NOUNS}[^)\\]]*[)\\]]`,
+        "gi"
+      ),
       " "
     )
     .replace(
-      /\s*[\u002d\u2013\u2014]\s*(?:\d{4}\s+)?(?:remaster(?:ed)?(?:\s+\d{4})?|live(?:\s+at|\s+from)?|radio edit|edit|version|mix|mono|stereo|acoustic|demo|session).*$/i,
+      new RegExp(
+        `\\s*[\\u002d\\u2013\\u2014]\\s*(?:\\d{4}\\s+)?(?:${VERSION_QUALIFIERS}\\s+)?(?:remaster(?:ed)?(?:\\s+\\d{4})?|live(?:\\s+at|\\s+from)?|radio edit|edit|version|mix|mono|stereo|acoustic|demo|session|bonus track).*$`,
+        "i"
+      ),
       ""
     )
   return normalizedText(withoutVersionTags)
 }
 
 const artistKeys = (candidate: RankableCandidate): string[] => {
-  const values = candidate.artistUris?.length ? candidate.artistUris : candidate.artistNames ?? []
+  const values = candidate.artistUris?.length ? candidate.artistUris : (candidate.artistNames ?? [])
   return [...new Set(values.map(normalizedText).filter(Boolean))]
 }
 
@@ -349,8 +353,7 @@ export const acousticDistanceV2 = (
   })
   if (squaredDeltas.length < 2) return null
   return Math.sqrt(
-    squaredDeltas.reduce((sum, squaredDelta) => sum + squaredDelta, 0) /
-      squaredDeltas.length
+    squaredDeltas.reduce((sum, squaredDelta) => sum + squaredDelta, 0) / squaredDeltas.length
   )
 }
 
@@ -461,10 +464,7 @@ export const evaluateSlateV2 = (
   for (let index = 0; index < items.length; index += 1) {
     const item = items[index]
     const candidateArtists = artistKeys(item.candidate)
-    const priorCandidates = [
-      ...queueTail,
-      ...items.slice(0, index).map((entry) => entry.candidate),
-    ]
+    const priorCandidates = [...queueTail, ...items.slice(0, index).map((entry) => entry.candidate)]
     const recentArtists = priorCandidates.slice(-5).flatMap(artistKeys)
     if (overlaps(candidateArtists, recentArtists)) artistSpacingViolations += 1
     if (
@@ -524,13 +524,11 @@ export const evaluateSlateV2 = (
   }
 }
 
-const candidateSimilarity = (
-  candidate: RankableCandidate,
-  other: RankableCandidate
-): number => {
+const candidateSimilarity = (candidate: RankableCandidate, other: RankableCandidate): number => {
   let similarity = 0
   if (overlaps(artistKeys(candidate), artistKeys(other))) similarity = Math.max(similarity, 0.85)
-  if (candidate.albumUri && candidate.albumUri === other.albumUri) similarity = Math.max(similarity, 0.9)
+  if (candidate.albumUri && candidate.albumUri === other.albumUri)
+    similarity = Math.max(similarity, 0.9)
   const acousticDistance = acousticDistanceV2(candidate.acoustic, other.acoustic)
   if (acousticDistance != null) similarity = Math.max(similarity, 1 - Math.min(1, acousticDistance))
   const sources = new Set(candidate.provenance.map((hit) => hit.source))
@@ -544,7 +542,7 @@ const candidateSimilarity = (
 }
 
 const skipArtistKeys = (skip: SkipSignal): string[] => {
-  const values = skip.artistUris?.length ? skip.artistUris : skip.artistNames ?? []
+  const values = skip.artistUris?.length ? skip.artistUris : (skip.artistNames ?? [])
   return [...new Set(values.map(normalizedText).filter(Boolean))]
 }
 
@@ -643,11 +641,7 @@ export const rankCandidatesV2 = (
       if (values.feedback != null && values.feedback < 0.7) {
         reasonCodes.push("rank:skip-penalized")
       }
-      if (
-        !candidate.title ||
-        artistKeys(candidate).length === 0 ||
-        !candidate.albumUri
-      ) {
+      if (!candidate.title || artistKeys(candidate).length === 0 || !candidate.albumUri) {
         reasonCodes.push("rank:partial-metadata")
       }
       return {
@@ -722,10 +716,7 @@ export const planSlateV2 = (
       }
     }
     if (feasible.length === 0) break
-    const priorDiscovery = [
-      ...discoveryHistory,
-      ...items.map((item) => item.discoveryEligible),
-    ]
+    const priorDiscovery = [...discoveryHistory, ...items.map((item) => item.discoveryEligible)]
     const recentDiscovery = priorDiscovery.slice(-9)
     const discoverySoFar = recentDiscovery.filter(Boolean).length
     const targetAfterPick = Math.ceil((Math.min(9, priorDiscovery.length) + 1) * 0.4)
@@ -769,9 +760,7 @@ export const planSlateV2 = (
         }
       }
     }
-    const preferred = feasible.filter(
-      (candidate) => dominantFamilyFor(candidate) === desiredFamily
-    )
+    const preferred = feasible.filter((candidate) => dominantFamilyFor(candidate) === desiredFamily)
     const usedBlendFallback = preferred.length === 0
     const pool = usedBlendFallback ? feasible : preferred
     const selectedCandidates = [...queueTail, ...items.map((item) => item.candidate)]
@@ -789,10 +778,7 @@ export const planSlateV2 = (
     const picked = (tied[Math.floor(rng() * tied.length)] ?? objectives[0]).candidate
     const dominantFamily = dominantFamilyFor(picked)
     const previous = selectedCandidates[selectedCandidates.length - 1]
-    const acousticDistanceFromPrevious = acousticDistanceV2(
-      previous?.acoustic,
-      picked.acoustic
-    )
+    const acousticDistanceFromPrevious = acousticDistanceV2(previous?.acoustic, picked.acoustic)
     const reasonCodes: PlanReasonCode[] = [
       dominantFamily === "similar" ? "blend:similar" : "blend:profile",
       "diversity:mmr",
@@ -808,13 +794,7 @@ export const planSlateV2 = (
       reasonCodes.push("transition:acoustic-paced")
     }
     const pickedViolations = new Set(
-      constraintViolations(
-        picked,
-        items,
-        absolutePosition,
-        queueTail,
-        maxAcousticTransition
-      )
+      constraintViolations(picked, items, absolutePosition, queueTail, maxAcousticTransition)
     )
     for (const relaxation of allowedRelaxations) {
       if (pickedViolations.has(relaxation)) {
@@ -829,8 +809,7 @@ export const planSlateV2 = (
       blendWeights,
       acousticDistanceFromPrevious,
       reasonCodes,
-      discoveryEligible:
-        !familiarUris.has(picked.uri) && dominantFamilyFor(picked) === "similar",
+      discoveryEligible: !familiarUris.has(picked.uri) && dominantFamilyFor(picked) === "similar",
     })
     selected[dominantFamily] += 1
     remaining = remaining.filter((candidate) => candidate.uri !== picked.uri)

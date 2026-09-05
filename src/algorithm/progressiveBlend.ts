@@ -25,9 +25,12 @@ export const buildTrackBatch = (
   discoveryHistory: readonly boolean[] = []
 ): TrackCandidate[] => {
   const excludeEarlyArtist = settings.excludeSeedArtistEarly && position <= 4
-  const profileIsSeedDiscography = profilePool.length > 0 && profilePool.every((candidate) =>
-    candidate.artistUri === seed.artistUri || candidate.artistName === seed.artistName
-  )
+  const profileIsSeedDiscography =
+    profilePool.length > 0 &&
+    profilePool.every(
+      (candidate) =>
+        candidate.artistUri === seed.artistUri || candidate.artistName === seed.artistName
+    )
 
   let similar = dedupeCandidates(filterPlayableCandidates(similarPool))
   let profile = dedupeCandidates(filterPlayableCandidates(profilePool))
@@ -72,14 +75,21 @@ export const buildSinglePoolBatch = (
     // If everything has been played, reset playedSet (except very recent history) to allow repeating
     const recentHistory = sessionPlayedUris.slice(-settings.historyPenaltyWindow)
     playedSet.clear()
-    recentHistory.forEach((uri) => playedSet.add(uri))
+    for (const uri of recentHistory) playedSet.add(uri)
     eligiblePool = filterPlayableCandidates(pool).filter((track) => !playedSet.has(track.uri))
   }
 
   return planRecommendationBatchV2({
     mode: "single",
     seed,
-    pools: [{ candidates: filterPlayableCandidates(pool), source: "single-pool", family: "profile", weight: 1 }],
+    pools: [
+      {
+        candidates: filterPlayableCandidates(pool),
+        source: "single-pool",
+        family: "profile",
+        weight: 1,
+      },
+    ],
     excludedUris: [...playedSet],
     queueTailUris: sessionPlayedUris,
     familiarUris: new Set(sessionPlayedUris),
@@ -124,7 +134,14 @@ export const buildPlaylistBatch = (
   return planRecommendationBatchV2({
     mode,
     seed: null,
-    pools: [{ candidates: playableCandidates, source: "playlist-discovery", family: "similar", weight: 1 }],
+    pools: [
+      {
+        candidates: playableCandidates,
+        source: "playlist-discovery",
+        family: "similar",
+        weight: 1,
+      },
+    ],
     referenceTracks: playlistTracks,
     excludedUris: [...playlistUris, ...excludedHistory],
     queueTailUris: sessionPlayedUris,

@@ -1,5 +1,5 @@
-import type { BlendPhase, SkipFeedback } from "../session/types"
 import type { TasteProfileState } from "../profile/tasteProfile"
+import type { BlendPhase, SkipFeedback } from "../session/types"
 
 export type SmartConfig = {
   eraWindow: number
@@ -26,7 +26,9 @@ const LEGACY_BETTER_SHUFFLE_STORAGE_KEY = "betterShuffle:settings"
 const LEGACY_SIMILAR_SHUFFLE_STORAGE_KEY = "similarShuffle:settings"
 const STORAGE_KEY = "shuffleSimilar:settings"
 
-export const getSmartConfig = (seed?: { releaseYear?: number; popularity?: number } | null): SmartConfig => {
+export const getSmartConfig = (
+  seed?: { releaseYear?: number; popularity?: number } | null
+): SmartConfig => {
   const releaseYear = seed?.releaseYear
   const popularity = seed?.popularity
 
@@ -57,7 +59,7 @@ export const getSmartConfig = (seed?: { releaseYear?: number; popularity?: numbe
       { maxPosition: 9, similarWeight: 0.7, profileWeight: 0.3 },
       { maxPosition: 19, similarWeight: 0.4, profileWeight: 0.6 },
       { maxPosition: Number.POSITIVE_INFINITY, similarWeight: 0.2, profileWeight: 0.8 },
-    ]
+    ],
   }
 }
 
@@ -74,10 +76,7 @@ const migrateLegacyStorage = (): void => {
     }
   }
 
-  const legacyHistoryKeys = [
-    LEGACY_SIMILAR_SHUFFLE_HISTORY_KEY,
-    LEGACY_BETTER_SHUFFLE_HISTORY_KEY,
-  ]
+  const legacyHistoryKeys = [LEGACY_SIMILAR_SHUFFLE_HISTORY_KEY, LEGACY_BETTER_SHUFFLE_HISTORY_KEY]
   for (const legacyKey of legacyHistoryKeys) {
     const legacyHistory = Spicetify.LocalStorage.get(legacyKey)
     if (legacyHistory && !Spicetify.LocalStorage.get(PLAY_HISTORY_STORAGE_KEY)) {

@@ -1,11 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 import type { SeedMetadata } from "../session/types"
 import {
-  PROFILE_SOURCE_TIMEOUT_MS,
   fetchAllPlaylistTracks,
   fetchProfilePool,
   fetchRecentlyPlayedTracks,
   fetchTopTracks,
+  PROFILE_SOURCE_TIMEOUT_MS,
 } from "./profileTracks"
 
 const seed: SeedMetadata = {
@@ -39,10 +39,7 @@ describe("profile source fallbacks", () => {
       if (url.includes("short_term")) throw new Error("short-term unavailable")
       if (url.includes("medium_term")) {
         return {
-          items: [
-            { uri: "spotify:track:healthy" },
-            { uri: "spotify:track:healthy" },
-          ],
+          items: [{ uri: "spotify:track:healthy" }, { uri: "spotify:track:healthy" }],
         }
       }
       throw new Error(`Unexpected URL: ${url}`)

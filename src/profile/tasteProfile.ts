@@ -146,7 +146,11 @@ const normalizeGenre = (value: unknown): string | null => {
 
 const normalizeContextKey = (value: unknown): string | undefined => {
   if (typeof value !== "string") return undefined
-  const normalized = value.trim().toLocaleLowerCase().replace(/[^a-z0-9:_-]+/g, "-").slice(0, 80)
+  const normalized = value
+    .trim()
+    .toLocaleLowerCase()
+    .replace(/[^a-z0-9:_-]+/g, "-")
+    .slice(0, 80)
   return normalized || undefined
 }
 
@@ -202,9 +206,7 @@ const candidateAcousticProfile = (candidate: TrackCandidate): AcousticProfile | 
 
 const keepNewest = <T extends { occurredAt: number }>(signals: T[], limit: number): T[] => {
   if (signals.length <= limit) return signals
-  return [...signals]
-    .sort((left, right) => left.occurredAt - right.occurredAt)
-    .slice(-limit)
+  return [...signals].sort((left, right) => left.occurredAt - right.occurredAt).slice(-limit)
 }
 
 const pruneProfile = (profile: TasteProfileState): TasteProfileState => ({
@@ -213,14 +215,8 @@ const pruneProfile = (profile: TasteProfileState): TasteProfileState => ({
     tracks: keepNewest(profile.signals.tracks, MAX_TRACK_SIGNALS),
     artists: keepNewest(profile.signals.artists, MAX_ARTIST_SIGNALS),
     genres: keepNewest(profile.signals.genres, MAX_GENRE_SIGNALS),
-    acousticPositive: keepNewest(
-      profile.signals.acousticPositive,
-      MAX_POSITIVE_ACOUSTIC_SIGNALS
-    ),
-    acousticNegative: keepNewest(
-      profile.signals.acousticNegative,
-      MAX_NEGATIVE_ACOUSTIC_SIGNALS
-    ),
+    acousticPositive: keepNewest(profile.signals.acousticPositive, MAX_POSITIVE_ACOUSTIC_SIGNALS),
+    acousticNegative: keepNewest(profile.signals.acousticNegative, MAX_NEGATIVE_ACOUSTIC_SIGNALS),
   },
 })
 
@@ -309,13 +305,17 @@ export const recordPlaybackOutcome = (
 ): TasteProfileState => {
   const details = outcomeDetails(outcome.type)
   if (!details) return profile
-  return recordTasteSignal(profile, {
-    sentiment: details.sentiment,
-    candidate: outcome.candidate,
-    genres: outcome.genres,
-    occurredAt: outcome.occurredAt,
-    contextKey: outcome.contextKey,
-  }, details.strength)
+  return recordTasteSignal(
+    profile,
+    {
+      sentiment: details.sentiment,
+      candidate: outcome.candidate,
+      genres: outcome.genres,
+      occurredAt: outcome.occurredAt,
+      contextKey: outcome.contextKey,
+    },
+    details.strength
+  )
 }
 
 export const recordExplicitTasteFeedback = (
@@ -339,7 +339,13 @@ const sanitizeCategoricalSignal = (value: unknown): CategoricalTasteSignal | nul
   ) {
     return null
   }
-  return { key, sentiment, strength: clamp(strength, 0.05, 1), occurredAt, contextKey: normalizeContextKey(value.contextKey) }
+  return {
+    key,
+    sentiment,
+    strength: clamp(strength, 0.05, 1),
+    occurredAt,
+    contextKey: normalizeContextKey(value.contextKey),
+  }
 }
 
 const sanitizeAcousticSignal = (value: unknown): AcousticTasteSignal | null => {
@@ -356,18 +362,23 @@ const sanitizeAcousticSignal = (value: unknown): AcousticTasteSignal | null => {
   ) {
     return null
   }
-  return { profile, strength: clamp(strength, 0.05, 1), occurredAt, contextKey: normalizeContextKey(value.contextKey) }
+  return {
+    profile,
+    strength: clamp(strength, 0.05, 1),
+    occurredAt,
+    contextKey: normalizeContextKey(value.contextKey),
+  }
 }
 
-const sanitizeArray = <T>(
-  value: unknown,
-  sanitizer: (entry: unknown) => T | null
-): T[] | null => {
+const sanitizeArray = <T>(value: unknown, sanitizer: (entry: unknown) => T | null): T[] | null => {
   if (!Array.isArray(value)) return null
   return value.map(sanitizer).filter((entry): entry is T => entry !== null)
 }
 
-const parseCurrentProfile = (value: Record<string, unknown>, now: number): TasteProfileState | null => {
+const parseCurrentProfile = (
+  value: Record<string, unknown>,
+  now: number
+): TasteProfileState | null => {
   if (!isRecord(value.signals)) return null
   const tracks = sanitizeArray(value.signals.tracks, sanitizeCategoricalSignal)
   const artists = sanitizeArray(value.signals.artists, sanitizeCategoricalSignal)
@@ -392,12 +403,17 @@ const parseCurrentProfile = (value: Record<string, unknown>, now: number): Taste
   })
 }
 
-const migrateV1Profile = (value: Record<string, unknown>, now: number): TasteProfileState | null => {
+const migrateV1Profile = (
+  value: Record<string, unknown>,
+  now: number
+): TasteProfileState | null => {
   if (!Array.isArray(value.events)) return null
   let profile = createEmptyTasteProfile(validTimestamp(value.updatedAt) ? value.updatedAt : now)
   const events = value.events
     .filter(isRecord)
-    .filter((event): event is Record<string, unknown> & LegacyEvent => validTimestamp(event.occurredAt))
+    .filter((event): event is Record<string, unknown> & LegacyEvent =>
+      validTimestamp(event.occurredAt)
+    )
     .sort((left, right) => Number(left.occurredAt) - Number(right.occurredAt))
     .slice(-MAX_TRACK_SIGNALS)
 
@@ -642,15 +658,22 @@ export const scoreTasteAffinity = (
   const confidence = getTasteProfileConfidence(profile, context.now)
   if (!confidence.ready) return 1
 
-  const components: Array<{ affinity: number | null; contextual: number | null; weight: number }> = []
+  const components: Array<{ affinity: number | null; contextual: number | null; weight: number }> =
+    []
   const track = cleanKey(candidate.uri)
   components.push({
     affinity: track
       ? categoricalAffinity(new Set([track]), profile.signals.tracks, context.now)
       : null,
-    contextual: track && context.contextKey
-      ? categoricalAffinity(new Set([track]), profile.signals.tracks, context.now, context.contextKey)
-      : null,
+    contextual:
+      track && context.contextKey
+        ? categoricalAffinity(
+            new Set([track]),
+            profile.signals.tracks,
+            context.now,
+            context.contextKey
+          )
+        : null,
     weight: 0.45,
   })
 
@@ -659,21 +682,26 @@ export const scoreTasteAffinity = (
     affinity: artist
       ? categoricalAffinity(new Set([artist]), profile.signals.artists, context.now)
       : null,
-    contextual: artist && context.contextKey
-      ? categoricalAffinity(new Set([artist]), profile.signals.artists, context.now, context.contextKey)
-      : null,
+    contextual:
+      artist && context.contextKey
+        ? categoricalAffinity(
+            new Set([artist]),
+            profile.signals.artists,
+            context.now,
+            context.contextKey
+          )
+        : null,
     weight: 0.3,
   })
 
   const genres = new Set(normalizeGenres(context.genres))
   components.push({
     affinity:
-      genres.size > 0
-        ? categoricalAffinity(genres, profile.signals.genres, context.now)
+      genres.size > 0 ? categoricalAffinity(genres, profile.signals.genres, context.now) : null,
+    contextual:
+      genres.size > 0 && context.contextKey
+        ? categoricalAffinity(genres, profile.signals.genres, context.now, context.contextKey)
         : null,
-    contextual: genres.size > 0 && context.contextKey
-      ? categoricalAffinity(genres, profile.signals.genres, context.now, context.contextKey)
-      : null,
     weight: 0.2,
   })
 
@@ -684,23 +712,25 @@ export const scoreTasteAffinity = (
           acoustic,
           profile.signals.acousticPositive,
           profile.signals.acousticNegative,
-        context.now
-      )
-      : null,
-    contextual: acoustic && context.contextKey
-      ? acousticAffinity(
-          acoustic,
-          profile.signals.acousticPositive,
-          profile.signals.acousticNegative,
-          context.now,
-          context.contextKey
+          context.now
         )
       : null,
+    contextual:
+      acoustic && context.contextKey
+        ? acousticAffinity(
+            acoustic,
+            profile.signals.acousticPositive,
+            profile.signals.acousticNegative,
+            context.now,
+            context.contextKey
+          )
+        : null,
     weight: 0.4,
   })
 
   const available = components.filter(
-    (component): component is { affinity: number; contextual: number | null; weight: number } => component.affinity !== null
+    (component): component is { affinity: number; contextual: number | null; weight: number } =>
+      component.affinity !== null
   )
   if (available.length === 0) return 1
   const totalWeight = available.reduce((sum, component) => sum + component.weight, 0)
@@ -708,15 +738,17 @@ export const scoreTasteAffinity = (
     available.reduce((sum, component) => sum + component.affinity * component.weight, 0) /
     totalWeight
   const contextual = available.filter(
-    (component): component is { affinity: number; contextual: number; weight: number } => component.contextual !== null
+    (component): component is { affinity: number; contextual: number; weight: number } =>
+      component.contextual !== null
   )
   const contextualWeight = contextual.reduce((sum, component) => sum + component.weight, 0)
-  const contextualAffinity = contextualWeight > 0
-    ? contextual.reduce((sum, component) => sum + component.contextual * component.weight, 0) / contextualWeight
-    : null
+  const contextualAffinity =
+    contextualWeight > 0
+      ? contextual.reduce((sum, component) => sum + component.contextual * component.weight, 0) /
+        contextualWeight
+      : null
   // Context can refine a mature global profile but never overpower it.
-  const learnedAffinity = contextualAffinity == null
-    ? globalAffinity
-    : globalAffinity * 0.7 + contextualAffinity * 0.3
+  const learnedAffinity =
+    contextualAffinity == null ? globalAffinity : globalAffinity * 0.7 + contextualAffinity * 0.3
   return clamp(Math.exp(0.75 * confidence.confidence * learnedAffinity), 0.5, 1.75)
 }

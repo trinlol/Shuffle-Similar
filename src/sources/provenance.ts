@@ -24,7 +24,9 @@ export const attachSourceProvenance = (
 ): ProvenancedTrackCandidate => {
   const source = cleanSourceId(sourceId)
   const existing = getSourceProvenance(candidate)
-  const combined = source ? [...existing.filter((entry) => entry !== source), source] : [...existing]
+  const combined = source
+    ? [...existing.filter((entry) => entry !== source), source]
+    : [...existing]
   return {
     ...candidate,
     sourceProvenance: combined.slice(-MAX_PROVENANCE_ENTRIES),
@@ -51,10 +53,9 @@ export const mergeCandidatesWithProvenance = (
         ([key, value]) => key !== "sourceProvenance" && value !== undefined && value !== null
       )
     ) as Partial<TrackCandidate>
-    const provenance = [
-      ...getSourceProvenance(existing),
-      ...getSourceProvenance(candidate),
-    ].filter((source, index, all) => all.indexOf(source) === index)
+    const provenance = [...getSourceProvenance(existing), ...getSourceProvenance(candidate)].filter(
+      (source, index, all) => all.indexOf(source) === index
+    )
     merged.set(candidate.uri, {
       ...existing,
       ...definedValues,

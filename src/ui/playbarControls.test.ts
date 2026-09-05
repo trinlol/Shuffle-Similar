@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 import {
-  removeLegacyButtonsFromMutations,
   playbarMutationsAffectControls,
+  removeLegacyButtonsFromMutations,
   sanitizeClonedPlaybarButton,
 } from "./playbarControls"
 

@@ -32,9 +32,7 @@ describe("artist track retrieval", () => {
                     uri: "spotify:track:healthy",
                     playability: { playable: true },
                     artists: {
-                      items: [
-                        { uri: "spotify:artist:artist-id", profile: { name: "Artist" } },
-                      ],
+                      items: [{ uri: "spotify:artist:artist-id", profile: { name: "Artist" } }],
                     },
                   },
                 },
@@ -55,9 +53,6 @@ describe("artist track retrieval", () => {
 
     expect(tracks.map((track) => track.uri)).toEqual(["spotify:track:healthy"])
     expect(get.mock.calls.some(([url]) => String(url).includes("/v1/albums?ids="))).toBe(false)
-    expect(getSourceProvenance(tracks[0])).toEqual([
-      "album-graphql",
-      "artist-discography",
-    ])
+    expect(getSourceProvenance(tracks[0])).toEqual(["album-graphql", "artist-discography"])
   })
 })

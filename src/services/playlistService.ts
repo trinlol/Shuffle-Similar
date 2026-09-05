@@ -6,7 +6,10 @@ type CreatedPlaylist = {
 
 type PlaylistPlatform = {
   RootlistAPI?: {
-    createPlaylist?: (name: string, options: { before: "start" }) => Promise<string | CreatedPlaylist>
+    createPlaylist?: (
+      name: string,
+      options: { before: "start" }
+    ) => Promise<string | CreatedPlaylist>
   }
   PlaylistAPI?: {
     add?: (playlistUri: string, uris: string[], options: { before: "start" }) => Promise<unknown>
@@ -17,7 +20,7 @@ const uniqueTrackUris = (uris: string[]): string[] => [
   ...new Set(uris.filter((uri) => uri.startsWith("spotify:track:"))),
 ]
 
-const playlistNameForSeed = (trackName: string, artistName: string): string => {
+const playlistNameForSeed = (trackName: string, _artistName: string): string => {
   const seedLabel = trackName.trim()
   if (!seedLabel) {
     throw new Error("Spotify could not load the selected song name. Please try again.")
@@ -51,11 +54,9 @@ export const createSimilarPlaylist = async (
   }
 
   for (let offset = 0; offset < trackUris.length; offset += PLAYLIST_TRACK_LIMIT) {
-    await playlistApi.add(
-      playlistUri,
-      trackUris.slice(offset, offset + PLAYLIST_TRACK_LIMIT),
-      { before: "start" }
-    )
+    await playlistApi.add(playlistUri, trackUris.slice(offset, offset + PLAYLIST_TRACK_LIMIT), {
+      before: "start",
+    })
   }
 
   return {

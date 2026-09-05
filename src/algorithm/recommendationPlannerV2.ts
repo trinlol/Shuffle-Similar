@@ -4,11 +4,11 @@ import { getSourceProvenance } from "../sources/provenance"
 import type { SmartConfig } from "../storage/settings"
 import {
   acousticDistanceV2,
-  planSlateV2,
-  rankCandidatesV2,
   type BlendFamily,
   type CandidateProvenance,
+  planSlateV2,
   type RankableCandidate,
+  rankCandidatesV2,
   type SlateEvaluationMetrics,
 } from "./rankingV2"
 
@@ -97,7 +97,10 @@ const acousticProfile = (candidate: TrackCandidate | SeedMetadata | null | undef
       }
     : undefined
 
-const mergeCandidate = (current: TrackCandidate | undefined, next: TrackCandidate): TrackCandidate => {
+const mergeCandidate = (
+  current: TrackCandidate | undefined,
+  next: TrackCandidate
+): TrackCandidate => {
   if (!current) return next
   const merged: TrackCandidate = { ...current }
   for (const [key, value] of Object.entries(next) as Array<
@@ -116,14 +119,17 @@ const contextAffinity = (
   references: readonly TrackCandidate[],
   eraWindow: number
 ): number | undefined => {
-  const seedDistance = seed && references.length > 0
-    ? acousticDistanceV2(acousticProfile(candidate), acousticProfile(seed))
-    : null
+  const seedDistance =
+    seed && references.length > 0
+      ? acousticDistanceV2(acousticProfile(candidate), acousticProfile(seed))
+      : null
   const seedAffinity = seedDistance != null ? Math.exp(-2.2 * seedDistance) : undefined
   let referenceAffinity: number | undefined
   if (references.length > 0) {
     const distances = references
-      .map((reference) => acousticDistanceV2(acousticProfile(candidate), acousticProfile(reference)))
+      .map((reference) =>
+        acousticDistanceV2(acousticProfile(candidate), acousticProfile(reference))
+      )
       .filter((distance): distance is number => distance != null)
       .sort((left, right) => left - right)
       .slice(0, 5)
@@ -244,7 +250,9 @@ const artistKey = (candidate: TrackCandidate): string =>
     ? `name:${candidate.artistName.trim().toLocaleLowerCase().replace(/\s+/g, " ")}`
     : "metadata:unknown-artist")
 
-const popularityDiagnostics = (tracks: readonly TrackCandidate[]): RecommendationPopularityDiagnostics => {
+const popularityDiagnostics = (
+  tracks: readonly TrackCandidate[]
+): RecommendationPopularityDiagnostics => {
   const known = tracks.map(finitePopularity).filter((value): value is number => value != null)
   if (known.length === 0) {
     return { knownRatio: 0, mean: null, standardDeviation: null, normalizedEntropy: 0 }
@@ -270,7 +278,7 @@ const stableSeed = (options: PlanRecommendationBatchV2Options, uris: readonly st
     options.mode,
     options.seed?.uri ?? "no-seed",
     String(options.absoluteStartPosition ?? 0),
-    ...options.queueTailUris?.slice(-8) ?? [],
+    ...(options.queueTailUris?.slice(-8) ?? []),
     ...uris,
   ].join("|")
 
@@ -288,17 +296,13 @@ export const planRecommendationBatchV2 = (
   }
   for (const reference of options.referenceTracks ?? []) rememberMetadata(reference)
   if (options.seed) rememberMetadata(options.seed)
-  const aggregates = new Map<
-    string,
-    { track: TrackCandidate; provenance: CandidateProvenance[] }
-  >()
+  const aggregates = new Map<string, { track: TrackCandidate; provenance: CandidateProvenance[] }>()
   const sourceWeights: Record<string, number> = {}
   const sourceRanks = new Map<string, number>()
 
   for (const pool of options.pools) {
-    const weight = typeof pool.weight === "number" && Number.isFinite(pool.weight)
-      ? Math.max(0, pool.weight)
-      : 1
+    const weight =
+      typeof pool.weight === "number" && Number.isFinite(pool.weight) ? Math.max(0, pool.weight) : 1
     pool.candidates.forEach((candidate) => {
       if (!candidate.uri?.startsWith("spotify:track:") || excluded.has(candidate.uri)) return
       const realSources = getSourceProvenance(candidate)
@@ -315,10 +319,7 @@ export const planRecommendationBatchV2 = (
       const current = aggregates.get(candidate.uri)
       aggregates.set(candidate.uri, {
         track: mergeCandidate(current?.track, candidate),
-        provenance: [
-          ...(current?.provenance ?? []),
-          ...provenance,
-        ],
+        provenance: [...(current?.provenance ?? []), ...provenance],
       })
     })
   }
@@ -397,34 +398,34 @@ export const planRecommendationBatchV2 = (
   })
 
   const candidateByUri = new Map(candidates.map((candidate) => [candidate.uri, candidate]))
-  const queueTail = (options.queueTailUris ?? [])
-    .slice(-5)
-    .map((uri) => {
-      const candidate = metadataByUri.get(uri)
-      return {
-        uri,
-        title: candidate?.trackName,
-        artistUris: candidate?.artistUri ? [candidate.artistUri] : undefined,
-        artistNames: candidate?.artistName ? [candidate.artistName] : undefined,
-        albumUri: candidate?.albumUri,
-        acoustic: acousticProfile(candidate),
-        provenance: [],
-      } satisfies RankableCandidate
-    })
+  const queueTail = (options.queueTailUris ?? []).slice(-5).map((uri) => {
+    const candidate = metadataByUri.get(uri)
+    return {
+      uri,
+      title: candidate?.trackName,
+      artistUris: candidate?.artistUri ? [candidate.artistUri] : undefined,
+      artistNames: candidate?.artistName ? [candidate.artistName] : undefined,
+      albumUri: candidate?.albumUri,
+      acoustic: acousticProfile(candidate),
+      provenance: [],
+    } satisfies RankableCandidate
+  })
   const plan = planSlateV2(ranked, {
     count: options.count,
     absoluteStartPosition: options.absoluteStartPosition,
-    rngSeed: options.rngSeed ?? stableSeed(options, ranked.map((candidate) => candidate.uri)),
+    rngSeed:
+      options.rngSeed ??
+      stableSeed(
+        options,
+        ranked.map((candidate) => candidate.uri)
+      ),
     blendPhases: options.settings.blendPhases.map((phase) => ({
       maxPosition: phase.maxPosition,
       similar: phase.similarWeight,
       profile: phase.profileWeight,
     })),
     queueTail,
-    familiarUris: new Set([
-      ...(options.familiarUris ?? []),
-      ...(options.topTrackUris ?? []),
-    ]),
+    familiarUris: new Set([...(options.familiarUris ?? []), ...(options.topTrackUris ?? [])]),
     discoveryHistory: options.discoveryHistory,
   })
   const tracks = plan.items

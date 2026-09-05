@@ -92,64 +92,65 @@ const publicError = (
   recovery: SimilarMixErrorRecovery
 ): SimilarMixPublicError => Object.freeze({ code, title, message, retryable, recovery })
 
-export const SIMILAR_MIX_ERROR_COPY: Readonly<Record<SimilarMixErrorCode, SimilarMixPublicError>> = Object.freeze({
-  offline: publicError(
-    "offline",
-    "Connection interrupted",
-    "Your mix will recover when Spotify is back online.",
-    true,
-    "retry"
-  ),
-  rate_limited: publicError(
-    "rate_limited",
-    "Taking a quick breather",
-    "Spotify needs a moment. We’ll try again shortly.",
-    true,
-    "wait"
-  ),
-  no_active_track: publicError(
-    "no_active_track",
-    "Play something first",
-    "Start a track, then turn on Similar Mix.",
-    true,
-    "choose_track"
-  ),
-  playback_unavailable: publicError(
-    "playback_unavailable",
-    "Playback unavailable",
-    "Choose an active device and try again.",
-    true,
-    "choose_device"
-  ),
-  service_unavailable: publicError(
-    "service_unavailable",
-    "Mix service unavailable",
-    "Spotify couldn’t refresh the mix. Try again in a moment.",
-    true,
-    "retry"
-  ),
-  permission_denied: publicError(
-    "permission_denied",
-    "Similar Mix needs access",
-    "Reconnect Spotify before trying again.",
-    false,
-    "none"
-  ),
-  storage_unavailable: publicError(
-    "storage_unavailable",
-    "Learning is temporarily limited",
-    "Your mix can continue, but listening preferences may not be saved.",
-    true,
-    "retry"
-  ),
-  unexpected: publicError(
-    "unexpected",
-    "Mix paused",
-    "We couldn’t update your mix. Try again.",
-    true,
-    "retry"
-  ),
-})
+export const SIMILAR_MIX_ERROR_COPY: Readonly<Record<SimilarMixErrorCode, SimilarMixPublicError>> =
+  Object.freeze({
+    offline: publicError(
+      "offline",
+      "Connection interrupted",
+      "Your mix will recover when Spotify is back online.",
+      true,
+      "retry"
+    ),
+    rate_limited: publicError(
+      "rate_limited",
+      "Taking a quick breather",
+      "Spotify needs a moment. We’ll try again shortly.",
+      true,
+      "wait"
+    ),
+    no_active_track: publicError(
+      "no_active_track",
+      "Play something first",
+      "Start a track, then turn on Similar Mix.",
+      true,
+      "choose_track"
+    ),
+    playback_unavailable: publicError(
+      "playback_unavailable",
+      "Playback unavailable",
+      "Choose an active device and try again.",
+      true,
+      "choose_device"
+    ),
+    service_unavailable: publicError(
+      "service_unavailable",
+      "Mix service unavailable",
+      "Spotify couldn’t refresh the mix. Try again in a moment.",
+      true,
+      "retry"
+    ),
+    permission_denied: publicError(
+      "permission_denied",
+      "Similar Mix needs access",
+      "Reconnect Spotify before trying again.",
+      false,
+      "none"
+    ),
+    storage_unavailable: publicError(
+      "storage_unavailable",
+      "Learning is temporarily limited",
+      "Your mix can continue, but listening preferences may not be saved.",
+      true,
+      "retry"
+    ),
+    unexpected: publicError(
+      "unexpected",
+      "Mix paused",
+      "We couldn’t update your mix. Try again.",
+      true,
+      "retry"
+    ),
+  })
 
 const readErrorHint = (error: unknown, key: string): unknown => {
   if ((typeof error !== "object" && typeof error !== "function") || error === null) return undefined
@@ -163,7 +164,10 @@ const readErrorHint = (error: unknown, key: string): unknown => {
 
 const normalizeHint = (value: unknown): string | undefined => {
   if (typeof value !== "string") return undefined
-  return value.trim().toUpperCase().replace(/[\s-]+/g, "_")
+  return value
+    .trim()
+    .toUpperCase()
+    .replace(/[\s-]+/g, "_")
 }
 
 const ERROR_CODE_HINTS: Readonly<Record<string, SimilarMixErrorCode>> = Object.freeze({
@@ -188,7 +192,8 @@ const ERROR_CODE_HINTS: Readonly<Record<string, SimilarMixErrorCode>> = Object.f
 /** Converts opaque failures into an allow-listed, display-safe public error. */
 export const mapSimilarMixError = (error: unknown): SimilarMixPublicError => {
   const statusHint = readErrorHint(error, "status") ?? readErrorHint(error, "statusCode")
-  const status = typeof statusHint === "number" && Number.isFinite(statusHint) ? statusHint : undefined
+  const status =
+    typeof statusHint === "number" && Number.isFinite(statusHint) ? statusHint : undefined
 
   if (status === 401 || status === 403) return SIMILAR_MIX_ERROR_COPY.permission_denied
   if (status === 429) return SIMILAR_MIX_ERROR_COPY.rate_limited
@@ -222,7 +227,10 @@ export interface SimilarMixStatusTransaction {
 
 export interface SimilarMixStatusController {
   getSnapshot(): SimilarMixStatusSnapshot
-  subscribe(listener: SimilarMixStatusListener, options?: { readonly emitCurrent?: boolean }): () => void
+  subscribe(
+    listener: SimilarMixStatusListener,
+    options?: { readonly emitCurrent?: boolean }
+  ): () => void
   transitionTo(state: SimilarMixStatus, error?: unknown): SimilarMixStatusSnapshot
   beginTransition(state: "building" | "refreshing" | "stopping"): SimilarMixStatusTransaction
 }
@@ -250,13 +258,14 @@ export const createSimilarMixStatus = (
     state: SimilarMixStatus,
     error: SimilarMixPublicError | undefined,
     currentRevision: number
-  ): SimilarMixStatusSnapshot => Object.freeze({
-    state,
-    copy: SIMILAR_MIX_STATUS_COPY[state],
-    ...(error ? { error } : {}),
-    revision: currentRevision,
-    updatedAt: now(),
-  })
+  ): SimilarMixStatusSnapshot =>
+    Object.freeze({
+      state,
+      copy: SIMILAR_MIX_STATUS_COPY[state],
+      ...(error ? { error } : {}),
+      revision: currentRevision,
+      updatedAt: now(),
+    })
 
   let snapshot = createSnapshot(options.initialState ?? "off", undefined, revision)
 
@@ -271,7 +280,8 @@ export const createSimilarMixStatus = (
   }
 
   const publish = (state: SimilarMixStatus, error?: unknown): SimilarMixStatusSnapshot => {
-    const safeError = state === "error" || state === "degraded" ? mapSimilarMixError(error) : undefined
+    const safeError =
+      state === "error" || state === "degraded" ? mapSimilarMixError(error) : undefined
     if (hasSameVisibleState(snapshot, state, safeError)) return snapshot
 
     revision += 1

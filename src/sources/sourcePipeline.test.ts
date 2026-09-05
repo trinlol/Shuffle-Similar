@@ -7,12 +7,15 @@ describe("SourcePipeline", () => {
 
     const result = await pipeline.run([
       { id: "radio", run: async () => ["a", "b"] },
-      { id: "search", run: async () => { throw new Error("403") } },
+      {
+        id: "search",
+        run: async () => {
+          throw new Error("403")
+        },
+      },
     ])
 
-    expect(result.values).toEqual([
-      { sourceId: "radio", value: ["a", "b"] },
-    ])
+    expect(result.values).toEqual([{ sourceId: "radio", value: ["a", "b"] }])
     expect(result.diagnostics.map(({ sourceId, status }) => ({ sourceId, status }))).toEqual([
       { sourceId: "radio", status: "ok" },
       { sourceId: "search", status: "error" },
@@ -25,7 +28,9 @@ describe("SourcePipeline", () => {
     let active = 0
     let peak = 0
     let release: (() => void) | undefined
-    const gate = new Promise<void>((resolve) => { release = resolve })
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
 
     const pending = pipeline.run(
       Array.from({ length: 5 }, (_, index) => ({
@@ -52,7 +57,9 @@ describe("SourcePipeline", () => {
     let active = 0
     let peak = 0
     let release: (() => void) | undefined
-    const gate = new Promise<void>((resolve) => { release = resolve })
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
     const task = (id: string) => ({
       id,
       run: async () => {
@@ -100,13 +107,15 @@ describe("SourcePipeline", () => {
     expect(calls).toBe(1)
 
     now += 1_001
-    const recovered = await pipeline.run([{
-      ...task,
-      run: async () => {
-        calls += 1
-        return ["recovered"]
+    const recovered = await pipeline.run([
+      {
+        ...task,
+        run: async () => {
+          calls += 1
+          return ["recovered"]
+        },
       },
-    }])
+    ])
     expect(recovered.diagnostics[0].status).toBe("ok")
     expect(calls).toBe(2)
   })
@@ -120,7 +129,14 @@ describe("SourcePipeline", () => {
     })
 
     for (const id of ["first", "second", "third"]) {
-      await pipeline.run([{ id, run: async () => { throw new Error("unavailable") } }])
+      await pipeline.run([
+        {
+          id,
+          run: async () => {
+            throw new Error("unavailable")
+          },
+        },
+      ])
     }
 
     expect(pipeline.healthEntryCount).toBe(2)
@@ -129,16 +145,27 @@ describe("SourcePipeline", () => {
   it("returns a foreground snapshot at quorum while tracking late work", async () => {
     const pipeline = new SourcePipeline({ timeoutMs: 500, maxConcurrency: 2 })
     let releaseSlow: (() => void) | undefined
-    const slowGate = new Promise<void>((resolve) => { releaseSlow = resolve })
+    const slowGate = new Promise<void>((resolve) => {
+      releaseSlow = resolve
+    })
     const lateValues: Array<{ sourceId: string; value: string[] }> = []
 
-    const foreground = await pipeline.run([
-      { id: "fast", run: async () => ["a", "b"] },
-      { id: "slow", run: async () => { await slowGate; return ["c"] } },
-    ], {
-      quorum: (values) => values.some(({ sourceId }) => sourceId === "fast"),
-      onLateValue: (value) => lateValues.push(value),
-    })
+    const foreground = await pipeline.run(
+      [
+        { id: "fast", run: async () => ["a", "b"] },
+        {
+          id: "slow",
+          run: async () => {
+            await slowGate
+            return ["c"]
+          },
+        },
+      ],
+      {
+        quorum: (values) => values.some(({ sourceId }) => sourceId === "fast"),
+        onLateValue: (value) => lateValues.push(value),
+      }
+    )
 
     expect(foreground.values).toEqual([{ sourceId: "fast", value: ["a", "b"] }])
     expect(lateValues).toEqual([])
@@ -151,17 +178,28 @@ describe("SourcePipeline", () => {
     vi.useFakeTimers()
     const pipeline = new SourcePipeline({ timeoutMs: 5_000, maxConcurrency: 1 })
     let releaseSlow: (() => void) | undefined
-    const slowGate = new Promise<void>((resolve) => { releaseSlow = resolve })
+    const slowGate = new Promise<void>((resolve) => {
+      releaseSlow = resolve
+    })
     const queuedRun = vi.fn(async () => ["queued"])
     const lateValues: Array<{ sourceId: string; value: string[] }> = []
 
-    const pending = pipeline.run([
-      { id: "slow", run: async () => { await slowGate; return ["late"] } },
-      { id: "queued", run: queuedRun },
-    ], {
-      foregroundDeadlineMs: 100,
-      onLateValue: (value) => lateValues.push(value),
-    })
+    const pending = pipeline.run(
+      [
+        {
+          id: "slow",
+          run: async () => {
+            await slowGate
+            return ["late"]
+          },
+        },
+        { id: "queued", run: queuedRun },
+      ],
+      {
+        foregroundDeadlineMs: 100,
+        onLateValue: (value) => lateValues.push(value),
+      }
+    )
 
     await vi.advanceTimersByTimeAsync(100)
     await expect(pending).resolves.toMatchObject({ values: [] })

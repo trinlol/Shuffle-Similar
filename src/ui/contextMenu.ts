@@ -1,14 +1,14 @@
+import { isPlaylistContext, isValidPlaybackContext } from "../queue/queueManager"
+import { explainSimilarMixTrack } from "../services/explainability"
+import { createSimilarPlaylist } from "../services/playlistService"
 import {
   buildFromContextMenu,
   startFromContextMenu,
   teachSimilarMixPreference,
 } from "../services/shuffleEngine"
-import { syncShuffleSimilarFromPlayback } from "./shuffleSimilarUiState"
-import { pickSeedFromCollection } from "../sources/profileTracks"
-import { isPlaylistContext, isValidPlaybackContext } from "../queue/queueManager"
-import { createSimilarPlaylist } from "../services/playlistService"
-import { explainSimilarMixTrack } from "../services/explainability"
 import { sessionManager } from "../session/SessionManager"
+import { pickSeedFromCollection } from "../sources/profileTracks"
+import { syncShuffleSimilarFromPlayback } from "./shuffleSimilarUiState"
 
 let contextMenuRegistered = false
 let contextActionBusy = false
@@ -31,7 +31,9 @@ const runContextAction = (work: () => Promise<void>, fallbackMessage: string) =>
         console.error("[Shuffle Similar]", error)
         Spicetify.showNotification(formatContextActionError(error, fallbackMessage), true)
       })
-      .finally(() => { contextActionBusy = false })
+      .finally(() => {
+        contextActionBusy = false
+      })
   }, 100)
 }
 
@@ -54,15 +56,12 @@ const runCreateSimilarPlaylist = (uris: string[]) => {
 const runPreferenceFeedback = (uris: string[], sentiment: -1 | 1) => {
   const label = sentiment > 0 ? "Learning from this track..." : "Tuning away from this track..."
   Spicetify.showNotification(label)
-  runContextAction(
-    async () => {
-      await teachSimilarMixPreference(uris[0], sentiment)
-      Spicetify.showNotification(
-        sentiment > 0 ? "Similar Mix will lean more this way" : "Similar Mix will avoid this sound"
-      )
-    },
-    "Similar Mix could not save that preference. Try again."
-  )
+  runContextAction(async () => {
+    await teachSimilarMixPreference(uris[0], sentiment)
+    Spicetify.showNotification(
+      sentiment > 0 ? "Similar Mix will lean more this way" : "Similar Mix will avoid this sound"
+    )
+  }, "Similar Mix could not save that preference. Try again.")
 }
 
 const showTrackExplanation = (uris: string[]) => {
@@ -136,8 +135,7 @@ const handlePlayWithShuffleSimilar = async (uris: string[]) => {
     return
   }
 
-  const rawContext =
-    uris.length === 1 && isValidPlaybackContext(uris[0]) ? uris[0] : null
+  const rawContext = uris.length === 1 && isValidPlaybackContext(uris[0]) ? uris[0] : null
   const contextUri = rawContext
 
   await startFromContextMenu(seedUri, contextUri)
@@ -153,14 +151,12 @@ const handleCreateSimilarPlaylist = async (uris: string[]) => {
     return
   }
 
-  const contextUri =
-    uris.length === 1 && isValidPlaybackContext(uris[0]) ? uris[0] : null
+  const contextUri = uris.length === 1 && isValidPlaybackContext(uris[0]) ? uris[0] : null
   const { seed, queueUris } = await buildFromContextMenu(seedUri, contextUri)
-  const playlist = await createSimilarPlaylist(
-    seed.trackName,
-    seed.artistName,
-    [seed.uri, ...queueUris]
-  )
+  const playlist = await createSimilarPlaylist(seed.trackName, seed.artistName, [
+    seed.uri,
+    ...queueUris,
+  ])
 
   await Spicetify.Player.playUri(playlist.uri)
 
@@ -168,7 +164,6 @@ const handleCreateSimilarPlaylist = async (uris: string[]) => {
     `Created "Similar to - ${seed.trackName}" with ${playlist.trackCount} tracks. Playing now.`
   )
 }
-
 
 export const registerContextMenu = () => {
   if (contextMenuRegistered) return
@@ -212,17 +207,13 @@ export const registerContextMenu = () => {
     "heart"
   ).register()
 
-new Spicetify.ContextMenu.Item(
+  new Spicetify.ContextMenu.Item(
     "Less like this",
     (uris) => runPreferenceFeedback(uris, -1),
     isSingleTrack
-).register()
-
-  new Spicetify.ContextMenu.Item(
-    "Why this track?",
-    showTrackExplanation,
-    isSingleTrack
   ).register()
+
+  new Spicetify.ContextMenu.Item("Why this track?", showTrackExplanation, isSingleTrack).register()
 
   contextMenuRegistered = true
   console.info("[Shuffle Similar] Context menus registered")

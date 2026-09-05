@@ -140,7 +140,9 @@ export class SourcePipeline {
 
     const snapshotResult = (): SourcePipelineResult<T> => ({
       values: [...values],
-      diagnostics: diagnostics.filter((diagnostic): diagnostic is SourceDiagnostic => Boolean(diagnostic)),
+      diagnostics: diagnostics.filter((diagnostic): diagnostic is SourceDiagnostic =>
+        Boolean(diagnostic)
+      ),
       degraded: diagnostics.some((diagnostic) => Boolean(diagnostic) && diagnostic.status !== "ok"),
     })
 
@@ -243,10 +245,7 @@ export class SourcePipeline {
     return await new Promise<SourcePipelineResult<T>>((resolve) => {
       resolveForeground = resolve
       if (options.foregroundDeadlineMs != null) {
-        foregroundTimer = setTimeout(
-          finishForeground,
-          Math.max(1, options.foregroundDeadlineMs)
-        )
+        foregroundTimer = setTimeout(finishForeground, Math.max(1, options.foregroundDeadlineMs))
       }
       maybeResolveQuorum()
       void completion

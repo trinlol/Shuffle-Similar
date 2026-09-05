@@ -76,7 +76,9 @@ const mapWithConcurrency = async <Input, Output>(
   return results
 }
 
-export const fetchArtistDiscographyTracks = async (artistUri: string): Promise<TrackCandidate[]> => {
+export const fetchArtistDiscographyTracks = async (
+  artistUri: string
+): Promise<TrackCandidate[]> => {
   const artistId = getUriId(artistUri)
   if (!artistId) return []
 
@@ -93,15 +95,15 @@ export const fetchArtistDiscographyTracks = async (artistUri: string): Promise<T
     const albums = (res?.items ?? []) as Array<{ id?: string; uri?: string }>
     if (albums.length === 0) return []
 
-    const albumUris = [...new Set(
-      albums
-        .map((album) => album.uri ?? (album.id ? `spotify:album:${album.id}` : ""))
-        .filter(Boolean)
-    )].slice(0, MAX_DISCOGRAPHY_ALBUMS)
-    const albumTracks = await mapWithConcurrency(
-      albumUris,
-      ALBUM_CONCURRENCY,
-      (albumUri) => fetchAlbumTracks(albumUri)
+    const albumUris = [
+      ...new Set(
+        albums
+          .map((album) => album.uri ?? (album.id ? `spotify:album:${album.id}` : ""))
+          .filter(Boolean)
+      ),
+    ].slice(0, MAX_DISCOGRAPHY_ALBUMS)
+    const albumTracks = await mapWithConcurrency(albumUris, ALBUM_CONCURRENCY, (albumUri) =>
+      fetchAlbumTracks(albumUri)
     )
     return mergeCandidatesWithProvenance(albumTracks.flat()).map((candidate) =>
       attachSourceProvenance(candidate, "artist-discography")

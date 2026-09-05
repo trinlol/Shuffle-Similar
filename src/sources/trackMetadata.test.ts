@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { fetchSeedMetadata } from "./trackMetadata"
 import { optionalSpotifyCapabilities } from "./spotifyApiAdapter"
+import { fetchSeedMetadata } from "./trackMetadata"
 
 describe("fetchSeedMetadata", () => {
   beforeEach(() => optionalSpotifyCapabilities.reset())
@@ -84,9 +84,8 @@ describe("fetchSeedMetadata", () => {
 
     expect(featureCalls).toBe(1)
     expect(
-      optionalSpotifyCapabilities
-        .snapshot()
-        .find((entry) => entry.capability === "audio-features")?.status
+      optionalSpotifyCapabilities.snapshot().find((entry) => entry.capability === "audio-features")
+        ?.status
     ).toBe("unsupported")
   })
 })

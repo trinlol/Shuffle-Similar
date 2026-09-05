@@ -1,8 +1,5 @@
 import { describe, expect, it, vi } from "vitest"
-import {
-  NATIVE_SHUFFLE_BLOCKED_TITLE,
-  applyNativeShuffleBlockedState,
-} from "./nativeShuffleGuard"
+import { applyNativeShuffleBlockedState, NATIVE_SHUFFLE_BLOCKED_TITLE } from "./nativeShuffleGuard"
 
 class FakeButton {
   disabled = false

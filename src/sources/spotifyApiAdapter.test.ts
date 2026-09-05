@@ -1,9 +1,5 @@
 import { describe, expect, it, vi } from "vitest"
-import {
-  BoundedCache,
-  OptionalSpotifyCapabilityGate,
-  runWithTimeout,
-} from "./spotifyApiAdapter"
+import { BoundedCache, OptionalSpotifyCapabilityGate, runWithTimeout } from "./spotifyApiAdapter"
 
 describe("BoundedCache", () => {
   it("evicts the least recently used entry and refreshes reads", () => {

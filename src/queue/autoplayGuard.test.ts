@@ -37,10 +37,7 @@ describe("autoplay guard", () => {
     mocks.isActive.mockReturnValue(true)
     mocks.getQueuedUris.mockReturnValue(owned)
     mocks.ownsQueueTrack.mockImplementation((uri) => owned.includes(uri))
-    mocks.getUpcomingQueueUris.mockReturnValue([
-      ...owned,
-      "spotify:track:spotify-context",
-    ])
+    mocks.getUpcomingQueueUris.mockReturnValue([...owned, "spotify:track:spotify-context"])
     enableAutoplayGuard()
     syncKnownQueue(owned)
 

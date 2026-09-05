@@ -21,11 +21,14 @@ describe("prefetch cache", () => {
 
   it("rejects a prefetch built before feedback changed within the same session", () => {
     const cache = createPrefetchCache(100)
-    cache.save({
-      revision: 4,
-      generation: 2,
-      uris: ["spotify:track:before-feedback"],
-    }, 1_000)
+    cache.save(
+      {
+        revision: 4,
+        generation: 2,
+        uris: ["spotify:track:before-feedback"],
+      },
+      1_000
+    )
 
     expect(cache.has(4, 3, 1_010)).toBe(false)
     expect(cache.take(4, 3, 1_010)).toBeNull()

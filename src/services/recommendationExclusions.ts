@@ -11,21 +11,23 @@ export type RecommendationExclusionInput = {
  * different: the existing upcoming tracks are the exact slate being
  * reconsidered, so only tracks that have actually played remain excluded.
  */
-export const buildRecommendationExclusions = (
-  input: RecommendationExclusionInput
-): string[] => [...new Set([
-  ...input.playedUris,
-  ...(input.purpose === "refill" ? input.committedQueueUris : []),
-  ...(input.purpose === "refill" ? input.visibleQueueUris : []),
-  ...(input.quarantinedUris ?? []),
-])]
+export const buildRecommendationExclusions = (input: RecommendationExclusionInput): string[] => [
+  ...new Set([
+    ...input.playedUris,
+    ...(input.purpose === "refill" ? input.committedQueueUris : []),
+    ...(input.purpose === "refill" ? input.visibleQueueUris : []),
+    ...(input.quarantinedUris ?? []),
+  ]),
+]
 
 export const buildHistoryRelaxedExclusions = (
   input: Omit<RecommendationExclusionInput, "purpose">,
   recentPlayedLimit: number
-): string[] => [...new Set([
-  ...input.playedUris.slice(-Math.max(1, Math.floor(recentPlayedLimit))),
-  ...input.committedQueueUris,
-  ...input.visibleQueueUris,
-  ...(input.quarantinedUris ?? []),
-])]
+): string[] => [
+  ...new Set([
+    ...input.playedUris.slice(-Math.max(1, Math.floor(recentPlayedLimit))),
+    ...input.committedQueueUris,
+    ...input.visibleQueueUris,
+    ...(input.quarantinedUris ?? []),
+  ]),
+]

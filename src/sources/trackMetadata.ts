@@ -66,17 +66,21 @@ const fetchTrackDetails = async (trackId: string) => {
       SOURCE_TIMEOUT_MS
     ).catch(() => null)
     const tracks = response?.tracks?.items ?? []
-    return tracks.find(
-      (track: { id?: string; uri?: string }) =>
-        track?.id === trackId || track?.uri === `spotify:track:${trackId}`
-    ) ?? null
+    return (
+      tracks.find(
+        (track: { id?: string; uri?: string }) =>
+          track?.id === trackId || track?.uri === `spotify:track:${trackId}`
+      ) ?? null
+    )
   }
 }
 
 export const getSeedMetadataFromPlayer = (uri: string): SeedMetadata => {
   const currentUri = Spicetify.Player.data?.item?.uri
   const metadata =
-    currentUri === uri ? (Spicetify.Player.data?.item?.metadata ?? {}) : ({} as Record<string, string>)
+    currentUri === uri
+      ? (Spicetify.Player.data?.item?.metadata ?? {})
+      : ({} as Record<string, string>)
   const trackId = getUriId(uri)
 
   return {
@@ -101,12 +105,8 @@ export const fetchSeedMetadata = async (uri: string): Promise<SeedMetadata> => {
     const artist = track?.artists?.[0]
     const artistId = artist?.id ?? getUriId(artist?.uri ?? "")
     const genres = artistId ? await fetchArtistGenres(artistId) : []
-    const featureResult = await optionalSpotifyCapabilities.run(
-      "audio-features",
-      () =>
-        Spicetify.CosmosAsync.get(
-          `https://api.spotify.com/v1/audio-features/${base.trackId}`
-        )
+    const featureResult = await optionalSpotifyCapabilities.run("audio-features", () =>
+      Spicetify.CosmosAsync.get(`https://api.spotify.com/v1/audio-features/${base.trackId}`)
     )
     const features = featureResult.status === "ok" ? featureResult.value : null
 
@@ -189,8 +189,7 @@ export const enrichCandidatesFromSearch = (
           artistUri: artist?.uri ?? (artist?.id ? `spotify:artist:${artist.id}` : undefined),
           artistName: artist?.name,
           albumUri:
-            track.album?.uri ??
-            (track.album?.id ? `spotify:album:${track.album.id}` : undefined),
+            track.album?.uri ?? (track.album?.id ? `spotify:album:${track.album.id}` : undefined),
           albumName: track.album?.name,
           trackName: track.name,
           popularity: track.popularity,

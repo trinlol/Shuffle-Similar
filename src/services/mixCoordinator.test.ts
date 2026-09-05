@@ -8,9 +8,11 @@ describe("LatestMixCoordinator", () => {
     const newest = coordinator.begin()
     let olderCommitted = false
 
-    await expect(coordinator.commit(older, async () => {
-      olderCommitted = true
-    })).rejects.toBeInstanceOf(StaleMixBuildError)
+    await expect(
+      coordinator.commit(older, async () => {
+        olderCommitted = true
+      })
+    ).rejects.toBeInstanceOf(StaleMixBuildError)
     await expect(coordinator.commit(newest, async () => "committed")).resolves.toBe("committed")
     expect(olderCommitted).toBe(false)
   })
@@ -21,8 +23,12 @@ describe("LatestMixCoordinator", () => {
     const firstToken = coordinator.begin()
     let releaseFirst: () => void = () => undefined
     let markFirstStarted: () => void = () => undefined
-    const holdFirst = new Promise<void>((resolve) => { releaseFirst = resolve })
-    const firstStarted = new Promise<void>((resolve) => { markFirstStarted = resolve })
+    const holdFirst = new Promise<void>((resolve) => {
+      releaseFirst = resolve
+    })
+    const firstStarted = new Promise<void>((resolve) => {
+      markFirstStarted = resolve
+    })
 
     const first = coordinator.commit(firstToken, async () => {
       events.push("first:start")
@@ -50,8 +56,12 @@ describe("LatestMixCoordinator", () => {
     const firstToken = coordinator.begin()
     let markFirstStarted: () => void = () => undefined
     let releaseFirst: () => void = () => undefined
-    const firstStarted = new Promise<void>((resolve) => { markFirstStarted = resolve })
-    const holdFirst = new Promise<void>((resolve) => { releaseFirst = resolve })
+    const firstStarted = new Promise<void>((resolve) => {
+      markFirstStarted = resolve
+    })
+    const holdFirst = new Promise<void>((resolve) => {
+      releaseFirst = resolve
+    })
     const first = coordinator.commit(firstToken, async () => {
       markFirstStarted()
       await holdFirst
@@ -73,11 +83,15 @@ describe("LatestMixCoordinator", () => {
   it("releases the commit lane after a failure", async () => {
     const coordinator = new LatestMixCoordinator()
     const failedToken = coordinator.begin()
-    await expect(coordinator.commit(failedToken, async () => {
-      throw new Error("queue failure")
-    })).rejects.toThrow("queue failure")
+    await expect(
+      coordinator.commit(failedToken, async () => {
+        throw new Error("queue failure")
+      })
+    ).rejects.toThrow("queue failure")
 
     const recoveredToken = coordinator.begin()
-    await expect(coordinator.commit(recoveredToken, async () => "recovered")).resolves.toBe("recovered")
+    await expect(coordinator.commit(recoveredToken, async () => "recovered")).resolves.toBe(
+      "recovered"
+    )
   })
 })

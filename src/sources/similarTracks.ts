@@ -1,22 +1,21 @@
+import { excludeArtist } from "../algorithm/filters"
 import type { SeedMetadata, TrackCandidate } from "../session/types"
 import type { SmartConfig } from "../storage/settings"
-import { excludeArtist } from "../algorithm/filters"
-import { candidateFromUri, enrichCandidatesFromSearch } from "./trackMetadata"
 import { getMarket } from "../utils/playability"
 import { getUriId } from "../utils/uri"
+import { attachSourceProvenance, mergeCandidatesWithProvenance } from "./provenance"
 import { SourcePipeline } from "./sourcePipeline"
-import {
-  attachSourceProvenance,
-  mergeCandidatesWithProvenance,
-} from "./provenance"
-import {
-  BoundedCache,
-  optionalSpotifyCapabilities,
-  runWithTimeout,
-} from "./spotifyApiAdapter"
+import { BoundedCache, optionalSpotifyCapabilities, runWithTimeout } from "./spotifyApiAdapter"
+import { candidateFromUri, enrichCandidatesFromSearch } from "./trackMetadata"
 
-type CachedFeatures = Pick<TrackCandidate, "instrumentalness" | "tempo" | "energy" | "valence" | "danceability" | "acousticness">
-type CachedMetadata = Pick<TrackCandidate, "albumUri" | "albumName" | "trackName" | "popularity" | "releaseYear">
+type CachedFeatures = Pick<
+  TrackCandidate,
+  "instrumentalness" | "tempo" | "energy" | "valence" | "danceability" | "acousticness"
+>
+type CachedMetadata = Pick<
+  TrackCandidate,
+  "albumUri" | "albumName" | "trackName" | "popularity" | "releaseYear"
+>
 const SOURCE_TIMEOUT_MS = 6_000
 const MAX_ENRICHMENT_REQUESTS = 12
 const ENRICHMENT_CONCURRENCY = 3
@@ -123,9 +122,8 @@ const enrichAudioFeaturesAndMetadata = async (
 
   const fetchFeatures = async (candidate: TrackCandidate): Promise<boolean> => {
     const id = getUriId(candidate.uri)
-    const result = await optionalSpotifyCapabilities.run(
-      "audio-features",
-      () => Spicetify.CosmosAsync.get(`https://api.spotify.com/v1/audio-features/${id}`)
+    const result = await optionalSpotifyCapabilities.run("audio-features", () =>
+      Spicetify.CosmosAsync.get(`https://api.spotify.com/v1/audio-features/${id}`)
     )
     if (result.status !== "ok") return false
     const response = result.value
@@ -158,11 +156,19 @@ const enrichAudioFeaturesAndMetadata = async (
     const cached = metadataCache.get(candidate.uri)
     if (cached) metadataMap.set(candidate.uri, cached)
   }
-  const needsMetadata = candidates.filter((c) =>
-    !metadataCache.has(c.uri) && (!c.albumName || !c.trackName || c.popularity === undefined || !c.albumUri || c.releaseYear === undefined)
+  const needsMetadata = candidates.filter(
+    (c) =>
+      !metadataCache.has(c.uri) &&
+      (!c.albumName ||
+        !c.trackName ||
+        c.popularity === undefined ||
+        !c.albumUri ||
+        c.releaseYear === undefined)
   )
   const boundedMetadata = needsMetadata
-    .filter((candidate, index, all) => all.findIndex((entry) => entry.uri === candidate.uri) === index)
+    .filter(
+      (candidate, index, all) => all.findIndex((entry) => entry.uri === candidate.uri) === index
+    )
     .slice(0, MAX_ENRICHMENT_REQUESTS)
   await mapWithConcurrency(boundedMetadata, ENRICHMENT_CONCURRENCY, async (candidate) => {
     const id = getUriId(candidate.uri)
@@ -180,8 +186,7 @@ const enrichAudioFeaturesAndMetadata = async (
         albumName: track?.album?.name,
         trackName: track?.name,
         popularity: track?.popularity,
-        releaseYear:
-          Number.parseInt(track?.album?.release_date?.slice(0, 4), 10) || undefined,
+        releaseYear: Number.parseInt(track?.album?.release_date?.slice(0, 4), 10) || undefined,
       }
       metadataMap.set(candidate.uri, cached)
       metadataCache.set(candidate.uri, cached)
@@ -210,9 +215,8 @@ const enrichAudioFeaturesAndMetadata = async (
   })
 }
 
-export const enrichPlaylistTracks = async (
-  tracks: TrackCandidate[]
-): Promise<TrackCandidate[]> => enrichAudioFeaturesAndMetadata(tracks)
+export const enrichPlaylistTracks = async (tracks: TrackCandidate[]): Promise<TrackCandidate[]> =>
+  enrichAudioFeaturesAndMetadata(tracks)
 
 const filterInstrumentalsAndSoundtracks = (
   candidates: TrackCandidate[],
@@ -231,7 +235,7 @@ const filterInstrumentalsAndSoundtracks = (
         /(Soundtrack|Score|OST|Original Motion Picture|Original Soundtrack|Broadway|Musical)/i.test(
           candidate.albumName
         )
-      
+
       if (isCandidateSoundtrack) {
         // Exception: Disney/movie vocal pop songs (which have low instrumentalness < 0.2 and high popularity >= 60)
         const isDisneyOrVocalPopException =
@@ -264,7 +268,10 @@ const fetchPlaylistCandidates = async (
     })
 
     return (res.items ?? [])
-      .filter((item: { uri: string; isPlayable?: boolean }) => item.uri && item.uri.startsWith("spotify:track:") && item.isPlayable !== false)
+      .filter(
+        (item: { uri: string; isPlayable?: boolean }) =>
+          item.uri && item.uri.startsWith("spotify:track:") && item.isPlayable !== false
+      )
       .map((item: { uri: string; metadata?: Record<string, string> }) =>
         candidateFromUri(item.uri, item.metadata, sourceId)
       )
@@ -289,9 +296,11 @@ const fetchInspiredByMix = async (seedUri: string): Promise<TrackCandidate[]> =>
 
 const fetchRadioStationCandidates = async (seedUri: string): Promise<TrackCandidate[]> => {
   try {
-    const radioUri = (Spicetify.URI as typeof Spicetify.URI & {
-      radioURI: (args: string) => Spicetify.URI
-    }).radioURI(seedUri)
+    const radioUri = (
+      Spicetify.URI as typeof Spicetify.URI & {
+        radioURI: (args: string) => Spicetify.URI
+      }
+    ).radioURI(seedUri)
     const { fetchTracksForRadioStation } = Spicetify.GraphQL.Definitions
     const { data, errors } = await Spicetify.GraphQL.Request(fetchTracksForRadioStation, {
       uri: radioUri.toString(),
@@ -397,12 +406,8 @@ const fetchRelatedArtistCandidates = async (seed: SeedMetadata): Promise<TrackCa
   const artistId = getUriId(seed.artistUri)
   if (!artistId) return []
 
-  const relatedResult = await optionalSpotifyCapabilities.run(
-    "related-artists",
-    () =>
-      Spicetify.CosmosAsync.get(
-        `https://api.spotify.com/v1/artists/${artistId}/related-artists`
-      )
+  const relatedResult = await optionalSpotifyCapabilities.run("related-artists", () =>
+    Spicetify.CosmosAsync.get(`https://api.spotify.com/v1/artists/${artistId}/related-artists`)
   )
   if (relatedResult.status !== "ok") return []
   const artists = (relatedResult.value?.artists ?? []).slice(0, 6) as Array<{ name?: string }>
@@ -433,12 +438,16 @@ const fetchAlbumPeerCandidates = async (seed: SeedMetadata): Promise<TrackCandid
     const items = (data?.albumUnion?.tracksV2 ?? data?.albumUnion?.tracks ?? []).items ?? []
     const albumTracks: TrackCandidate[] = []
     for (const item of items) {
-      const track = (item as { track?: {
-        uri?: string
-        playability?: { playable?: boolean }
-        artists?: { items?: Array<{ uri?: string; profile?: { name?: string } }> }
-        popularity?: number
-      } }).track
+      const track = (
+        item as {
+          track?: {
+            uri?: string
+            playability?: { playable?: boolean }
+            artists?: { items?: Array<{ uri?: string; profile?: { name?: string } }> }
+            popularity?: number
+          }
+        }
+      ).track
       if (!track?.playability?.playable || !track.uri || track.uri === seed.uri) continue
       albumTracks.push(
         attachSourceProvenance(
@@ -459,10 +468,11 @@ const fetchAlbumPeerCandidates = async (seed: SeedMetadata): Promise<TrackCandid
   }
 }
 
-const fetchAudioFeatures = async (trackId: string): Promise<{ tempo?: number; energy?: number; valence?: number } | null> => {
-  const result = await optionalSpotifyCapabilities.run(
-    "audio-features",
-    () => Spicetify.CosmosAsync.get(`https://api.spotify.com/v1/audio-features/${trackId}`)
+const fetchAudioFeatures = async (
+  trackId: string
+): Promise<{ tempo?: number; energy?: number; valence?: number } | null> => {
+  const result = await optionalSpotifyCapabilities.run("audio-features", () =>
+    Spicetify.CosmosAsync.get(`https://api.spotify.com/v1/audio-features/${trackId}`)
   )
   if (result.status !== "ok") return null
   return {
@@ -512,9 +522,8 @@ const fetchRecommendations = async (
     }
   }
 
-  const result = await optionalSpotifyCapabilities.run(
-    "recommendations",
-    () => Spicetify.CosmosAsync.get(url)
+  const result = await optionalSpotifyCapabilities.run("recommendations", () =>
+    Spicetify.CosmosAsync.get(url)
   )
   return result.status === "ok"
     ? enrichCandidatesFromSearch(result.value?.tracks ?? [], "recommendations")
@@ -529,23 +538,26 @@ const fetchSimilarPoolInternal = async (
   const generation = (discoveryGenerations.get(seed.uri) ?? 0) + 1
   discoveryGenerations.set(seed.uri, generation)
   const cachedLateCandidates = takeLateDiscovery(seed.uri)
-  const results = await discoveryPipeline.run<TrackCandidate[]>([
-    { id: "recommendations", run: () => fetchRecommendations(seed, settings, 50) },
-    { id: "inspired-by", run: () => fetchInspiredByMix(seed.uri) },
-    { id: "radio", run: () => fetchRadioStationCandidates(seed.uri) },
-    { id: "genre-era-search", run: () => fetchGenreEraCandidates(seed, settings) },
-    { id: "era-search", run: () => fetchEraOnlyCandidates(seed, settings) },
-    { id: "related-artists", run: () => fetchRelatedArtistCandidates(seed) },
-    { id: "album-peers", run: () => fetchAlbumPeerCandidates(seed) },
-  ], {
-    quorum: hasDiscoveryQuorum,
-    onLateValue: ({ sourceId, value }) => {
-      if (discoveryGenerations.get(seed.uri) === generation) {
-        rememberLateDiscovery(seed.uri, sourceId, value)
-      }
-    },
-    foregroundDeadlineMs: 4_500,
-  })
+  const results = await discoveryPipeline.run<TrackCandidate[]>(
+    [
+      { id: "recommendations", run: () => fetchRecommendations(seed, settings, 50) },
+      { id: "inspired-by", run: () => fetchInspiredByMix(seed.uri) },
+      { id: "radio", run: () => fetchRadioStationCandidates(seed.uri) },
+      { id: "genre-era-search", run: () => fetchGenreEraCandidates(seed, settings) },
+      { id: "era-search", run: () => fetchEraOnlyCandidates(seed, settings) },
+      { id: "related-artists", run: () => fetchRelatedArtistCandidates(seed) },
+      { id: "album-peers", run: () => fetchAlbumPeerCandidates(seed) },
+    ],
+    {
+      quorum: hasDiscoveryQuorum,
+      onLateValue: ({ sourceId, value }) => {
+        if (discoveryGenerations.get(seed.uri) === generation) {
+          rememberLateDiscovery(seed.uri, sourceId, value)
+        }
+      },
+      foregroundDeadlineMs: 4_500,
+    }
+  )
 
   const merged: TrackCandidate[] = [...cachedLateCandidates]
   for (const result of results.values) {
@@ -649,9 +661,8 @@ export const fetchPlaylistRecommendations = async (
     }
   }
 
-  const result = await optionalSpotifyCapabilities.run(
-    "recommendations",
-    () => Spicetify.CosmosAsync.get(url)
+  const result = await optionalSpotifyCapabilities.run("recommendations", () =>
+    Spicetify.CosmosAsync.get(url)
   )
   return result.status === "ok"
     ? enrichCandidatesFromSearch(result.value?.tracks ?? [], "playlist-recommendations")
@@ -687,17 +698,13 @@ export const fetchPlaylistSimilarPool = async (
   )
 
   // Build SeedMetadata for each sampled track
-  const seedMetadatas = await mapWithConcurrency(
-    seeds,
-    2,
-    (candidate) => buildSeedMetadataFromCandidate(candidate)
+  const seedMetadatas = await mapWithConcurrency(seeds, 2, (candidate) =>
+    buildSeedMetadataFromCandidate(candidate)
   )
 
   // Run discovery with bounded fan-out, then enrich only the merged pool once.
-  const poolResults = await mapWithConcurrency(
-    seedMetadatas,
-    2,
-    (seedMetadata) => fetchSimilarPoolInternal(seedMetadata, settings, false).catch(() => [])
+  const poolResults = await mapWithConcurrency(seedMetadatas, 2, (seedMetadata) =>
+    fetchSimilarPoolInternal(seedMetadata, settings, false).catch(() => [])
   )
 
   // Also try the legacy recommendations endpoint as one more signal
@@ -721,12 +728,20 @@ export const fetchPlaylistSimilarPool = async (
   deduped = await enrichAudioFeaturesAndMetadata(deduped)
 
   // 2. Check if the playlist seeds are vocal and if any is a soundtrack
-  const vocalCount = seedMetadatas.filter((s) => s.instrumentalness === undefined || s.instrumentalness < 0.2).length
+  const vocalCount = seedMetadatas.filter(
+    (s) => s.instrumentalness === undefined || s.instrumentalness < 0.2
+  ).length
   const isPlaylistVocal = vocalCount >= seedMetadatas.length / 2
 
   const isPlaylistSoundtrack = seedMetadatas.some((s) => {
-    const isSoundtrackAlbum = s.albumName && /(Soundtrack|Score|OST|Original Motion Picture|Original Soundtrack|Broadway|Musical)/i.test(s.albumName)
-    const isSoundtrackGenre = s.genres.some((g) => /(soundtrack|score|orchestral|movie tunes|show tunes|broadway|musical)/i.test(g))
+    const isSoundtrackAlbum =
+      s.albumName &&
+      /(Soundtrack|Score|OST|Original Motion Picture|Original Soundtrack|Broadway|Musical)/i.test(
+        s.albumName
+      )
+    const isSoundtrackGenre = s.genres.some((g) =>
+      /(soundtrack|score|orchestral|movie tunes|show tunes|broadway|musical)/i.test(g)
+    )
     return isSoundtrackAlbum || isSoundtrackGenre
   })
 
@@ -760,10 +775,7 @@ const buildSeedMetadataFromCandidate = async (candidate: TrackCandidate): Promis
   if (artistId) {
     try {
       const artist = await runWithTimeout(
-        () =>
-          Spicetify.CosmosAsync.get(
-            `https://api.spotify.com/v1/artists/${artistId}`
-          ),
+        () => Spicetify.CosmosAsync.get(`https://api.spotify.com/v1/artists/${artistId}`),
         SOURCE_TIMEOUT_MS
       )
       genres = (artist?.genres ?? []).filter((g: string) => typeof g === "string")
@@ -787,12 +799,8 @@ const buildSeedMetadataFromCandidate = async (candidate: TrackCandidate): Promis
       albumName = track?.album?.name
     }
     if (trackId && instrumentalness === undefined) {
-      const featureResult = await optionalSpotifyCapabilities.run(
-        "audio-features",
-        () =>
-          Spicetify.CosmosAsync.get(
-            `https://api.spotify.com/v1/audio-features/${trackId}`
-          )
+      const featureResult = await optionalSpotifyCapabilities.run("audio-features", () =>
+        Spicetify.CosmosAsync.get(`https://api.spotify.com/v1/audio-features/${trackId}`)
       )
       if (featureResult.status === "ok") {
         instrumentalness = featureResult.value?.instrumentalness ?? instrumentalness

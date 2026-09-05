@@ -6,7 +6,9 @@ describe("QueueMutationCoordinator", () => {
     const coordinator = new QueueMutationCoordinator()
     const operations: string[] = []
     let release: (() => void) | undefined
-    const gate = new Promise<void>((resolve) => { release = resolve })
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
 
     const first = coordinator.run(async () => {
       operations.push("first:start")

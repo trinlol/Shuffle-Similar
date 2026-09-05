@@ -78,5 +78,5 @@ export const popularityWeight = (
 
   // Normalize to 0–1 range, invert, then apply exponential curve
   const normalized = 1 - pop / 100
-  return Math.pow(normalized, 1) * steepness + 0.3
+  return normalized ** 1 * steepness + 0.3
 }

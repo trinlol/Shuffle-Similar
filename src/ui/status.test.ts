@@ -1,12 +1,12 @@
 import { describe, expect, it, vi } from "vitest"
 import {
-  SIMILAR_MIX_STATUS_COPY,
   createSimilarMixStatus,
   mapSimilarMixError,
   mountSimilarMixStatus,
+  SIMILAR_MIX_STATUS_COPY,
+  type SimilarMixStatus,
   unmountSimilarMixStatus,
   updateSimilarMixStatus,
-  type SimilarMixStatus,
 } from "./status"
 
 const STATES: SimilarMixStatus[] = [
@@ -128,9 +128,12 @@ describe("Similar Mix status controller", () => {
   it("isolates faulty observers so healthy observers still receive updates", () => {
     const controller = createSimilarMixStatus()
     const healthy = vi.fn()
-    controller.subscribe(() => {
-      throw new Error("broken view")
-    }, { emitCurrent: false })
+    controller.subscribe(
+      () => {
+        throw new Error("broken view")
+      },
+      { emitCurrent: false }
+    )
     controller.subscribe(healthy, { emitCurrent: false })
 
     expect(() => controller.transitionTo("building")).not.toThrow()

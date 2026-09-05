@@ -1,7 +1,7 @@
+import { scoreTasteAffinity, type TasteProfileState } from "../profile/tasteProfile"
 import type { AcousticProfile, SkipFeedback, TrackCandidate } from "../session/types"
 import { loadPlayHistory } from "../storage/settings"
 import { pickWeightedRandom, popularityWeight } from "./shuffle"
-import { scoreTasteAffinity, type TasteProfileState } from "../profile/tasteProfile"
 
 export const dedupeCandidates = (candidates: TrackCandidate[]): TrackCandidate[] => {
   const seen = new Set<string>()
@@ -128,12 +128,8 @@ export type RecentKeys = {
 export const getRecentKeys = (played: TrackCandidate[], spacing: number): RecentKeys => {
   const recent = played.slice(-spacing)
   return {
-    artists: recent
-      .map((track) => track.artistUri ?? track.artistName ?? "")
-      .filter(Boolean),
-    albums: recent
-      .map((track) => track.albumUri ?? "")
-      .filter(Boolean),
+    artists: recent.map((track) => track.artistUri ?? track.artistName ?? "").filter(Boolean),
+    albums: recent.map((track) => track.albumUri ?? "").filter(Boolean),
   }
 }
 
@@ -185,15 +181,20 @@ export const normalizeTempo = (tempo: number): number =>
 
 export const acousticDistance = (a: AcousticProfile, b: AcousticProfile): number | null => {
   const pairs: Array<[number | undefined, number | undefined, boolean?]> = [
-    [a.tempo, b.tempo, true], [a.energy, b.energy], [a.valence, b.valence],
-    [a.danceability, b.danceability], [a.acousticness, b.acousticness],
+    [a.tempo, b.tempo, true],
+    [a.energy, b.energy],
+    [a.valence, b.valence],
+    [a.danceability, b.danceability],
+    [a.acousticness, b.acousticness],
     [a.instrumentalness, b.instrumentalness],
   ]
-  const deltas = pairs.filter(([left, right]) => left != null && right != null).map(([left, right, tempo]) => {
-    const normalizedLeft = tempo ? normalizeTempo(left!) : left!
-    const normalizedRight = tempo ? normalizeTempo(right!) : right!
-    return (normalizedLeft - normalizedRight) ** 2
-  })
+  const deltas = pairs
+    .filter(([left, right]) => left != null && right != null)
+    .map(([left, right, tempo]) => {
+      const normalizedLeft = tempo ? normalizeTempo(left!) : left!
+      const normalizedRight = tempo ? normalizeTempo(right!) : right!
+      return (normalizedLeft - normalizedRight) ** 2
+    })
   return deltas.length >= 2
     ? Math.sqrt(deltas.reduce((sum, value) => sum + value, 0) / deltas.length)
     : null
@@ -237,7 +238,21 @@ export const pickFromPool = (
   pool: TrackCandidate[],
   options: PickFromPoolOptions
 ): TrackCandidate | null => {
-  const { recentKeys, artistSpacing, albumSpacing, favorObscure, historyWeights, seedYear, eraWindow, seedProfile, skipFeedback, playlistProfiles, topTrackUris, tasteProfile, tasteProfileNow } = options
+  const {
+    recentKeys,
+    artistSpacing,
+    albumSpacing,
+    favorObscure,
+    historyWeights,
+    seedYear,
+    eraWindow,
+    seedProfile,
+    skipFeedback,
+    playlistProfiles,
+    topTrackUris,
+    tasteProfile,
+    tasteProfileNow,
+  } = options
 
   // Filter for spacing — prefer candidates that respect both artist and album spacing
   const eligible = pool.filter(
@@ -247,9 +262,12 @@ export const pickFromPool = (
   )
 
   // Fall back to artist-only spacing, then to full pool
-  const artistOnly = eligible.length > 0
-    ? eligible
-    : pool.filter((candidate) => respectsArtistSpacing(candidate, recentKeys.artists, artistSpacing))
+  const artistOnly =
+    eligible.length > 0
+      ? eligible
+      : pool.filter((candidate) =>
+          respectsArtistSpacing(candidate, recentKeys.artists, artistSpacing)
+        )
   const pickPool = artistOnly.length > 0 ? artistOnly : pool
 
   if (pickPool.length === 0) return null

@@ -1,18 +1,26 @@
 {
   "name": "shuffle-similar",
-  "version": "2.1.1",
+  "version": "2.1.2",
   "description": "Adaptive, source-resilient Similar Mix queues for Spicetify",
   "private": true,
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "build": "node esbuild.config.mjs",
     "build-local": "node esbuild.config.mjs --local",
     "build:release": "node esbuild.config.mjs --release",
     "generate:preview": "node scripts/generate-preview.mjs",
+    "check:bundle": "node scripts/check-release-bundle.mjs",
     "watch": "node esbuild.config.mjs --watch",
     "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "lint:fix": "biome check --write .",
+    "format": "biome format --write .",
     "test": "vitest run"
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.5.12",
     "@resvg/resvg-js": "^2.6.2",
     "@types/react": "^18.3.12",
     "esbuild": "^0.28.2",

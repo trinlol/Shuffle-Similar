@@ -25,20 +25,23 @@ export type ActiveSessionSnapshot = {
 export type ActiveSessionInput = Pick<ActiveSessionSnapshot, "seed" | "queuedUris" | "position"> &
   Partial<Pick<ActiveSessionSnapshot, "recentPositiveAnchors" | "familiarityLedger">>
 
-const safeTrackUris = (uris: readonly string[]): string[] => [
-  ...new Set(uris.filter((uri) => typeof uri === "string" && uri.startsWith("spotify:track:"))),
-].slice(0, MAX_QUEUE_URIS)
+const safeTrackUris = (uris: readonly string[]): string[] =>
+  [
+    ...new Set(uris.filter((uri) => typeof uri === "string" && uri.startsWith("spotify:track:"))),
+  ].slice(0, MAX_QUEUE_URIS)
 
 const validSeed = (value: unknown): value is SeedMetadata => {
   if (!value || typeof value !== "object") return false
   const seed = value as Partial<SeedMetadata>
   return (
-    typeof seed.uri === "string" && seed.uri.startsWith("spotify:track:") &&
+    typeof seed.uri === "string" &&
+    seed.uri.startsWith("spotify:track:") &&
     typeof seed.trackId === "string" &&
     typeof seed.trackName === "string" &&
     typeof seed.artistName === "string" &&
     typeof seed.artistUri === "string" &&
-    Array.isArray(seed.genres) && seed.genres.every((genre) => typeof genre === "string")
+    Array.isArray(seed.genres) &&
+    seed.genres.every((genre) => typeof genre === "string")
   )
 }
 
@@ -46,7 +49,11 @@ const sanitizeSnapshot = (value: unknown, now: number): ActiveSessionSnapshot | 
   if (!value || typeof value !== "object") return null
   const snapshot = value as Partial<ActiveSessionSnapshot>
   const storedVersion = (value as { version?: unknown }).version
-  if ((storedVersion !== 1 && storedVersion !== SESSION_SCHEMA_VERSION) || !validSeed(snapshot.seed)) return null
+  if (
+    (storedVersion !== 1 && storedVersion !== SESSION_SCHEMA_VERSION) ||
+    !validSeed(snapshot.seed)
+  )
+    return null
   if (typeof snapshot.savedAt !== "number" || !Number.isFinite(snapshot.savedAt)) return null
   if (snapshot.savedAt > now + 60_000 || now - snapshot.savedAt > MAX_SESSION_AGE_MS) return null
   if (!Array.isArray(snapshot.queuedUris)) return null
@@ -57,38 +64,49 @@ const sanitizeSnapshot = (value: unknown, now: number): ActiveSessionSnapshot | 
     savedAt: snapshot.savedAt,
     seed: snapshot.seed,
     queuedUris,
-    position: typeof snapshot.position === "number" && Number.isFinite(snapshot.position)
-      ? Math.max(0, Math.floor(snapshot.position))
-      : 0,
+    position:
+      typeof snapshot.position === "number" && Number.isFinite(snapshot.position)
+        ? Math.max(0, Math.floor(snapshot.position))
+        : 0,
     recentPositiveAnchors: Array.isArray(snapshot.recentPositiveAnchors)
       ? snapshot.recentPositiveAnchors
           .filter((candidate): candidate is TrackCandidate =>
-            Boolean(candidate && typeof candidate === "object" &&
-              typeof (candidate as TrackCandidate).uri === "string" &&
-              (candidate as TrackCandidate).uri.startsWith("spotify:track:"))
+            Boolean(
+              candidate &&
+                typeof candidate === "object" &&
+                typeof (candidate as TrackCandidate).uri === "string" &&
+                (candidate as TrackCandidate).uri.startsWith("spotify:track:")
+            )
           )
           .slice(-3)
       : [],
     familiarityLedger: Array.isArray(snapshot.familiarityLedger)
       ? snapshot.familiarityLedger
-          .filter((entry): entry is FamiliarityClassification =>
-            entry === "familiar" || entry === "discovery" || entry === "unknown")
+          .filter(
+            (entry): entry is FamiliarityClassification =>
+              entry === "familiar" || entry === "discovery" || entry === "unknown"
+          )
           .slice(-9)
       : [],
   }
 }
 
-export const createSessionRecoveryStore = (storage: SessionRecoveryStorage = Spicetify.LocalStorage) => ({
+export const createSessionRecoveryStore = (
+  storage: SessionRecoveryStorage = Spicetify.LocalStorage
+) => ({
   save: (input: ActiveSessionInput, now = Date.now()): ActiveSessionSnapshot | null => {
-    const snapshot = sanitizeSnapshot({
-      version: SESSION_SCHEMA_VERSION,
-      savedAt: now,
-      seed: input.seed,
-      queuedUris: input.queuedUris,
-      position: input.position,
-      recentPositiveAnchors: input.recentPositiveAnchors ?? [],
-      familiarityLedger: input.familiarityLedger ?? [],
-    }, now)
+    const snapshot = sanitizeSnapshot(
+      {
+        version: SESSION_SCHEMA_VERSION,
+        savedAt: now,
+        seed: input.seed,
+        queuedUris: input.queuedUris,
+        position: input.position,
+        recentPositiveAnchors: input.recentPositiveAnchors ?? [],
+        familiarityLedger: input.familiarityLedger ?? [],
+      },
+      now
+    )
     if (!snapshot) return null
     try {
       storage.set(ACTIVE_SESSION_STORAGE_KEY, JSON.stringify(snapshot))
@@ -105,12 +123,20 @@ export const createSessionRecoveryStore = (storage: SessionRecoveryStorage = Spi
       if (!snapshot) storage.remove(ACTIVE_SESSION_STORAGE_KEY)
       return snapshot
     } catch {
-      try { storage.remove(ACTIVE_SESSION_STORAGE_KEY) } catch { /* ignore */ }
+      try {
+        storage.remove(ACTIVE_SESSION_STORAGE_KEY)
+      } catch {
+        /* ignore */
+      }
       return null
     }
   },
   clear: (): void => {
-    try { storage.remove(ACTIVE_SESSION_STORAGE_KEY) } catch { /* ignore */ }
+    try {
+      storage.remove(ACTIVE_SESSION_STORAGE_KEY)
+    } catch {
+      /* ignore */
+    }
   },
 })
 

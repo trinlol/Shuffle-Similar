@@ -3,3 +3,9 @@ dist/
 *.log
 .DS_Store
 Thumbs.db
+
+# Local working artifacts (agent notes, perf logs, pairing sessions, side themes)
+.agents/
+.codex/
+.han/
+theme/

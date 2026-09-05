@@ -1,6 +1,9 @@
 export const SHUFFLE_SIMILAR_TEST_ID = "shuffle-similar-button"
 
-export const LEGACY_EXTENSION_TEST_IDS = ["better-shuffle-button", "similar-shuffle-button"] as const
+export const LEGACY_EXTENSION_TEST_IDS = [
+  "better-shuffle-button",
+  "similar-shuffle-button",
+] as const
 
 const LEGACY_EXTENSION_LABELS = ["Better Shuffle", "Similar Shuffle"] as const
 
@@ -150,10 +153,9 @@ const PLAYBAR_CONTROL_MUTATION_SELECTOR = [
 ].join(", ")
 
 const nodeContainsPlaybarControl = (node: Node): boolean =>
-  node instanceof Element && (
-    node.matches(PLAYBAR_CONTROL_MUTATION_SELECTOR) ||
-    Boolean(node.querySelector(PLAYBAR_CONTROL_MUTATION_SELECTOR))
-  )
+  node instanceof Element &&
+  (node.matches(PLAYBAR_CONTROL_MUTATION_SELECTOR) ||
+    Boolean(node.querySelector(PLAYBAR_CONTROL_MUTATION_SELECTOR)))
 
 /** Cheaply rejects the frequent playbar mutations that cannot affect either
  * shuffle control, avoiding timer churn and follow-up DOM reads. */
@@ -228,7 +230,10 @@ export const findNativeShuffleButton = (): HTMLButtonElement | null => {
 
 export const isNativeShuffleTarget = (target: EventTarget | null): boolean => {
   if (!(target instanceof Element)) return false
-  if (isShuffleSimilarButton(target) || target.closest(`[data-testid="${SHUFFLE_SIMILAR_TEST_ID}"]`)) {
+  if (
+    isShuffleSimilarButton(target) ||
+    target.closest(`[data-testid="${SHUFFLE_SIMILAR_TEST_ID}"]`)
+  ) {
     return false
   }
 

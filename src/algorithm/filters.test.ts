@@ -1,9 +1,9 @@
 import { beforeAll, describe, expect, it, vi } from "vitest"
-import { feedbackWeight, normalizeTempo, playlistAffinityWeight } from "./filters"
-import { buildTrackBatch, buildPlaylistBatch, getBlendWeights } from "./progressiveBlend"
-import { getSmartConfig } from "../storage/settings"
-import type { SeedMetadata, TrackCandidate } from "../session/types"
 import { sessionManager } from "../session/SessionManager"
+import type { SeedMetadata, TrackCandidate } from "../session/types"
+import { getSmartConfig } from "../storage/settings"
+import { feedbackWeight, normalizeTempo, playlistAffinityWeight } from "./filters"
+import { buildPlaylistBatch, buildTrackBatch, getBlendWeights } from "./progressiveBlend"
 
 beforeAll(() => {
   ;(globalThis as unknown as { Spicetify: unknown }).Spicetify = {
@@ -48,14 +48,24 @@ describe("automatic recommendation scoring", () => {
       { uri: "spotify:track:a", tempo: 120, energy: 0.7, valence: 0.6 },
       { uri: "spotify:track:b", tempo: 122, energy: 0.68, valence: 0.62 },
     ]
-    expect(playlistAffinityWeight(close, playlist)).toBeGreaterThan(playlistAffinityWeight(far, playlist))
+    expect(playlistAffinityWeight(close, playlist)).toBeGreaterThan(
+      playlistAffinityWeight(far, playlist)
+    )
   })
 
   it("never returns tracks already present in playlist mode", () => {
-    const playlist: TrackCandidate[] = [{ uri: "spotify:track:existing", tempo: 120, energy: 0.7, valence: 0.6 }]
+    const playlist: TrackCandidate[] = [
+      { uri: "spotify:track:existing", tempo: 120, energy: 0.7, valence: 0.6 },
+    ]
     const pool: TrackCandidate[] = [
       ...playlist,
-      { uri: "spotify:track:new", artistUri: "spotify:artist:new", tempo: 121, energy: 0.7, valence: 0.6 },
+      {
+        uri: "spotify:track:new",
+        artistUri: "spotify:artist:new",
+        tempo: 121,
+        energy: 0.7,
+        valence: 0.6,
+      },
     ]
     const result = buildPlaylistBatch(playlist, pool, [], [], getSmartConfig(seed), 5)
     expect(result.map((track) => track.uri)).toEqual(["spotify:track:new"])
@@ -76,10 +86,12 @@ describe("automatic recommendation scoring", () => {
       energy: 0.71,
       valence: 0.59,
     }
-    const weight = feedbackWeight(candidate, [{
-      artistUri: "spotify:artist:skipped",
-      profile: { tempo: 120, energy: 0.7, valence: 0.6 },
-    }])
+    const weight = feedbackWeight(candidate, [
+      {
+        artistUri: "spotify:artist:skipped",
+        profile: { tempo: 120, energy: 0.7, valence: 0.6 },
+      },
+    ])
     expect(weight).toBeCloseTo(0.025)
   })
 
@@ -127,7 +139,9 @@ describe("automatic recommendation scoring", () => {
     }))
     const result = buildTrackBatch(seed, 0, [], pool, [], getSmartConfig(seed), 8)
     for (let index = 1; index < result.length; index += 1) {
-      const recentArtists = result.slice(Math.max(0, index - 3), index).map((track) => track.artistUri)
+      const recentArtists = result
+        .slice(Math.max(0, index - 3), index)
+        .map((track) => track.artistUri)
       expect(recentArtists).not.toContain(result[index].artistUri)
     }
     vi.restoreAllMocks()

@@ -242,10 +242,7 @@ export const classifyPlaybackTransition = (
 
   if (!transition.current?.uri) return ignored("missing-current", transition, occurredAt)
 
-  if (
-    metrics.progressRatio >= SUBSTANTIAL_RATIO ||
-    metrics.progressMs >= SUBSTANTIAL_TIME_MS
-  ) {
+  if (metrics.progressRatio >= SUBSTANTIAL_RATIO || metrics.progressMs >= SUBSTANTIAL_TIME_MS) {
     return teachingObservation("substantial-play", { ...transition, previous }, metrics, occurredAt)
   }
 

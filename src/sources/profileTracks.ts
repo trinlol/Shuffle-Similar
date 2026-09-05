@@ -1,11 +1,11 @@
-import type { SeedMetadata, TrackCandidate } from "../session/types"
 import { sortByObscurity } from "../algorithm/filters"
-import { candidateFromUri } from "./trackMetadata"
 import { pickRandom } from "../algorithm/shuffle"
+import type { SeedMetadata, TrackCandidate } from "../session/types"
 import { isWebApiTrackPlayable } from "../utils/playability"
 import { getUriId } from "../utils/uri"
 import { attachSourceProvenance, mergeCandidatesWithProvenance } from "./provenance"
 import { runWithTimeout } from "./spotifyApiAdapter"
+import { candidateFromUri } from "./trackMetadata"
 
 type AlbumTrack = {
   uri?: string
@@ -150,20 +150,24 @@ type PlaylistEntry = {
 export const fetchRecentlyPlayedTracks = async (): Promise<TrackCandidate[]> => {
   try {
     const response = await runWithTimeout(
-      () => Spicetify.CosmosAsync.get(
-        "https://api.spotify.com/v1/me/player/recently-played?limit=50"
-      ),
+      () =>
+        Spicetify.CosmosAsync.get("https://api.spotify.com/v1/me/player/recently-played?limit=50"),
       PROFILE_SOURCE_TIMEOUT_MS
     )
     return (response?.items ?? [])
       .map((item: any) => item?.track)
       .filter((track: any) => track?.uri && isWebApiTrackPlayable(track))
-      .map((track: any) => attachSourceProvenance({
-        uri: track.uri,
-        artistUri: track.artists?.[0]?.uri,
-        artistName: track.artists?.[0]?.name,
-        popularity: track.popularity,
-      }, "recently-played"))
+      .map((track: any) =>
+        attachSourceProvenance(
+          {
+            uri: track.uri,
+            artistUri: track.artists?.[0]?.uri,
+            artistName: track.artists?.[0]?.name,
+            popularity: track.popularity,
+          },
+          "recently-played"
+        )
+      )
       .slice(0, 50)
   } catch {
     return []
@@ -207,7 +211,10 @@ const fetchPlaylistTracks = async (playlistUri: string): Promise<TrackCandidate[
   )
 
   return (res.items ?? [])
-    .filter((item: { uri: string; isPlayable?: boolean }) => item.uri && item.uri.startsWith("spotify:track:") && item.isPlayable !== false)
+    .filter(
+      (item: { uri: string; isPlayable?: boolean }) =>
+        item.uri && item.uri.startsWith("spotify:track:") && item.isPlayable !== false
+    )
     .map((item: { uri: string; metadata?: Record<string, string> }) =>
       candidateFromUri(item.uri, item.metadata, "profile-playlist")
     )
@@ -234,7 +241,10 @@ export const fetchAllPlaylistTracks = async (playlistUri: string): Promise<Track
       if (items.length === 0) break
 
       const tracks = items
-        .filter((item: { uri: string; isPlayable?: boolean }) => item.uri && item.uri.startsWith("spotify:track:") && item.isPlayable !== false)
+        .filter(
+          (item: { uri: string; isPlayable?: boolean }) =>
+            item.uri && item.uri.startsWith("spotify:track:") && item.isPlayable !== false
+        )
         .map((item: { uri: string; metadata?: Record<string, string> }) =>
           candidateFromUri(item.uri, item.metadata, "profile-playlist")
         )
@@ -256,21 +266,21 @@ export const fetchAllPlaylistTracks = async (playlistUri: string): Promise<Track
 export const fetchTopTracks = async (): Promise<string[]> => {
   const topTracks: string[] = []
   const results = await Promise.allSettled([
-      runWithTimeout<TopTracksResponse>(
+    runWithTimeout<TopTracksResponse>(
       () =>
         Spicetify.CosmosAsync.get(
           "https://api.spotify.com/v1/me/top/tracks?limit=50&time_range=short_term"
         ),
       PROFILE_SOURCE_TIMEOUT_MS
     ),
-      runWithTimeout<TopTracksResponse>(
+    runWithTimeout<TopTracksResponse>(
       () =>
         Spicetify.CosmosAsync.get(
           "https://api.spotify.com/v1/me/top/tracks?limit=50&time_range=medium_term"
         ),
       PROFILE_SOURCE_TIMEOUT_MS
     ),
-      runWithTimeout<TopTracksResponse>(
+    runWithTimeout<TopTracksResponse>(
       () =>
         Spicetify.CosmosAsync.get(
           "https://api.spotify.com/v1/me/top/tracks?limit=50&time_range=long_term"
@@ -289,7 +299,6 @@ export const fetchTopTracks = async (): Promise<string[]> => {
   }
   return [...new Set(topTracks)]
 }
-
 
 const scorePlaylistName = (name: string, seed: SeedMetadata): number => {
   const lower = name.toLowerCase()

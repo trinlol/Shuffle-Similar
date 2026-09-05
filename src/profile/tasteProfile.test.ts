@@ -1,16 +1,16 @@
 import { describe, expect, it, vi } from "vitest"
 import type { TrackCandidate } from "../session/types"
 import {
-  MAX_PROFILE_SIGNALS,
-  TASTE_PROFILE_SCHEMA_VERSION,
-  TASTE_PROFILE_STORAGE_KEY,
   createEmptyTasteProfile,
   createSpicetifyLocalStorageAdapter,
   createTasteProfileStore,
   getTasteProfileConfidence,
+  MAX_PROFILE_SIGNALS,
   recordExplicitTasteFeedback,
   recordPlaybackOutcome,
   scoreTasteAffinity,
+  TASTE_PROFILE_SCHEMA_VERSION,
+  TASTE_PROFILE_STORAGE_KEY,
   type TasteProfileStorage,
 } from "./tasteProfile"
 

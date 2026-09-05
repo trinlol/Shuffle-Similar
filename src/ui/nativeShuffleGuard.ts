@@ -20,12 +20,12 @@ type NativeButtonAttributes = {
 
 const originalButtonAttributes = new WeakMap<HTMLButtonElement, NativeButtonAttributes>()
 const blockedButtons = new WeakSet<HTMLButtonElement>()
-const BLOCKED_NATIVE_SHUFFLE_SELECTORS = NATIVE_SHUFFLE_SELECTORS
-  .map((selector) => `${selector}[data-shuffle-similar-blocked="true"]`)
-  .join(", ")
-const FOCUSED_BLOCKED_NATIVE_SHUFFLE_SELECTORS = NATIVE_SHUFFLE_SELECTORS
-  .map((selector) => `${selector}[data-shuffle-similar-blocked="true"]:focus-visible`)
-  .join(", ")
+const BLOCKED_NATIVE_SHUFFLE_SELECTORS = NATIVE_SHUFFLE_SELECTORS.map(
+  (selector) => `${selector}[data-shuffle-similar-blocked="true"]`
+).join(", ")
+const FOCUSED_BLOCKED_NATIVE_SHUFFLE_SELECTORS = NATIVE_SHUFFLE_SELECTORS.map(
+  (selector) => `${selector}[data-shuffle-similar-blocked="true"]:focus-visible`
+).join(", ")
 
 const injectStyles = () => {
   if (document.getElementById("shuffle-similar-native-guard-styles")) return

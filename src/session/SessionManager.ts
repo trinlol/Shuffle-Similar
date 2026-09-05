@@ -1,10 +1,3 @@
-import type { SeedMetadata, SkipFeedback, TrackCandidate } from "./types"
-import {
-  appendPlayHistory,
-  getSmartConfig,
-  loadPlayHistory,
-  PLAY_HISTORY_STORAGE_KEY,
-} from "../storage/settings"
 import { classifyPlaybackTransition, type PlaybackObservation } from "../feedback/playbackObserver"
 import {
   createListeningContextKey,
@@ -14,6 +7,13 @@ import {
   type TasteProfileStore,
   type TasteSentiment,
 } from "../profile/tasteProfile"
+import {
+  appendPlayHistory,
+  getSmartConfig,
+  loadPlayHistory,
+  PLAY_HISTORY_STORAGE_KEY,
+} from "../storage/settings"
+import type { SeedMetadata, SkipFeedback, TrackCandidate } from "./types"
 
 type SessionState = {
   revision: number
@@ -126,42 +126,45 @@ const getTasteProfileStore = (): TasteProfileStore => {
 
 export const sessionManager = {
   initializeTasteIdentity: async (): Promise<string | null> => {
-    if (!identityInitialization) identityInitialization = (async () => {
-      try {
-      const identity = await Promise.race([
-        Spicetify.CosmosAsync.get("https://api.spotify.com/v1/me"),
-        new Promise<never>((_, reject) => setTimeout(() => reject(new Error("identity timeout")), 2_500)),
-      ]) as { account_id?: string; id?: string }
-      const rawId = identity.account_id ?? identity.id
-      if (!rawId) return null
-      const accountId = rawId.replace(/[^A-Za-z0-9._-]/g, "").slice(0, 128)
-      if (!accountId) return null
-      const storage = createSpicetifyLocalStorageAdapter()
-      const accountKey = `${TASTE_PROFILE_STORAGE_KEY}:account:${accountId}`
-      const accountHistoryKey = `${PLAY_HISTORY_STORAGE_KEY}:account:${accountId}`
-      try {
-        if (!storage.get(accountKey) && !storage.get(TASTE_PROFILE_LEGACY_CLAIM_KEY)) {
-          const legacy = storage.get(TASTE_PROFILE_STORAGE_KEY)
-          if (legacy) storage.set(accountKey, legacy)
-          storage.set(TASTE_PROFILE_LEGACY_CLAIM_KEY, accountId)
+    if (!identityInitialization)
+      identityInitialization = (async () => {
+        try {
+          const identity = (await Promise.race([
+            Spicetify.CosmosAsync.get("https://api.spotify.com/v1/me"),
+            new Promise<never>((_, reject) =>
+              setTimeout(() => reject(new Error("identity timeout")), 2_500)
+            ),
+          ])) as { account_id?: string; id?: string }
+          const rawId = identity.account_id ?? identity.id
+          if (!rawId) return null
+          const accountId = rawId.replace(/[^A-Za-z0-9._-]/g, "").slice(0, 128)
+          if (!accountId) return null
+          const storage = createSpicetifyLocalStorageAdapter()
+          const accountKey = `${TASTE_PROFILE_STORAGE_KEY}:account:${accountId}`
+          const accountHistoryKey = `${PLAY_HISTORY_STORAGE_KEY}:account:${accountId}`
+          try {
+            if (!storage.get(accountKey) && !storage.get(TASTE_PROFILE_LEGACY_CLAIM_KEY)) {
+              const legacy = storage.get(TASTE_PROFILE_STORAGE_KEY)
+              if (legacy) storage.set(accountKey, legacy)
+              storage.set(TASTE_PROFILE_LEGACY_CLAIM_KEY, accountId)
+            }
+            if (!storage.get(accountHistoryKey) && !storage.get(PLAY_HISTORY_LEGACY_CLAIM_KEY)) {
+              const legacyHistory = storage.get(PLAY_HISTORY_STORAGE_KEY)
+              if (legacyHistory) storage.set(accountHistoryKey, legacyHistory)
+              storage.set(PLAY_HISTORY_LEGACY_CLAIM_KEY, accountId)
+            }
+          } catch {
+            // Identity isolation still works even when legacy migration is unavailable.
+          }
+          tasteProfileStore = createTasteProfileStore(storage, accountKey)
+          playHistoryStorageKey = accountHistoryKey
+          return accountId
+        } catch {
+          getTasteProfileStore()
+          playHistoryStorageKey = PLAY_HISTORY_ANONYMOUS_KEY
+          return null
         }
-        if (!storage.get(accountHistoryKey) && !storage.get(PLAY_HISTORY_LEGACY_CLAIM_KEY)) {
-          const legacyHistory = storage.get(PLAY_HISTORY_STORAGE_KEY)
-          if (legacyHistory) storage.set(accountHistoryKey, legacyHistory)
-          storage.set(PLAY_HISTORY_LEGACY_CLAIM_KEY, accountId)
-        }
-      } catch {
-        // Identity isolation still works even when legacy migration is unavailable.
-      }
-      tasteProfileStore = createTasteProfileStore(storage, accountKey)
-      playHistoryStorageKey = accountHistoryKey
-      return accountId
-      } catch {
-        getTasteProfileStore()
-        playHistoryStorageKey = PLAY_HISTORY_ANONYMOUS_KEY
-        return null
-      }
-    })()
+      })()
     const pending = identityInitialization
     try {
       return await pending
@@ -201,10 +204,11 @@ export const sessionManager = {
   getArtistTracks: () => state.artistTracks,
   getSkipFeedback: () => [...state.skipped],
   getTasteProfile: (now = Date.now()) => getTasteProfileStore().load(now),
-  getTasteContextKey: (now = Date.now()) => createListeningContextKey(
-    state.playlistUri ? "playlist" : state.artistUri ? "artist" : "track",
-    now
-  ),
+  getTasteContextKey: (now = Date.now()) =>
+    createListeningContextKey(
+      state.playlistUri ? "playlist" : state.artistUri ? "artist" : "track",
+      now
+    ),
   clearTasteProfile: () => getTasteProfileStore().clear(),
   recordExplicitFeedback: (candidate: TrackCandidate, sentiment: TasteSentiment) => {
     if (!candidate.uri?.startsWith("spotify:track:")) return
@@ -298,11 +302,7 @@ export const sessionManager = {
     sessionManager.registerCandidates(playlistTracks)
   },
 
-  startArtistSession: (
-    seed: SeedMetadata,
-    artistUri: string,
-    artistTracks: TrackCandidate[]
-  ) => {
+  startArtistSession: (seed: SeedMetadata, artistUri: string, artistTracks: TrackCandidate[]) => {
     state.revision += 1
     state.active = true
     state.seed = seed
@@ -427,9 +427,7 @@ export const sessionManager = {
     const observation = classifyPlaybackTransition(
       {
         cause:
-          previousUri && state.quarantinedUris.has(previousUri)
-            ? "play-failure"
-            : "songchange",
+          previousUri && state.quarantinedUris.has(previousUri) ? "play-failure" : "songchange",
         previous: previousCandidate
           ? {
               candidate: previousCandidate,
@@ -526,7 +524,6 @@ export const sessionManager = {
     }
     return observation
   },
-
 
   recordTrackPlayed: (uri: string): boolean => {
     if (!uri || uri === "spotify:delimiter" || !state.active) return false

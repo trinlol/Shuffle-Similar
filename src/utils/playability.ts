@@ -81,8 +81,9 @@ const cacheQueuePlayability = (key: string, playable: boolean, checkedAt: number
   }
 }
 
-const uniqueTrackUris = (uris: readonly string[]): string[] =>
-  [...new Set(uris.filter((uri) => uri.startsWith("spotify:track:")))]
+const uniqueTrackUris = (uris: readonly string[]): string[] => [
+  ...new Set(uris.filter((uri) => uri.startsWith("spotify:track:"))),
+]
 
 /**
  * Checks the front of a generated queue with the single-track endpoint. The
@@ -94,7 +95,10 @@ export const verifyQueuePlayability = async (
   options: { maxChecks?: number; now?: number } = {}
 ): Promise<QueuePlayabilityResult> => {
   const uniqueUris = uniqueTrackUris(uris)
-  const maxChecks = Math.max(0, Math.min(uniqueUris.length, options.maxChecks ?? QUEUE_PLAYABILITY_PROBE_LIMIT))
+  const maxChecks = Math.max(
+    0,
+    Math.min(uniqueUris.length, options.maxChecks ?? QUEUE_PLAYABILITY_PROBE_LIMIT)
+  )
   const market = getMarket()
   const now = options.now ?? Date.now()
   const rejected = new Set<string>()
@@ -125,10 +129,7 @@ export const verifyQueuePlayability = async (
         QUEUE_PLAYABILITY_TIMEOUT_MS
       )
       const playable = Boolean(
-        track &&
-          track.uri === uri &&
-          track.is_playable !== false &&
-          track.is_local !== true
+        track && track.uri === uri && track.is_playable !== false && track.is_local !== true
       )
       checked.add(uri)
       cacheQueuePlayability(cacheKey, playable, now)
@@ -161,9 +162,8 @@ export const verifyQueuePlayability = async (
     // A transiently failed probe is still allowed as a degraded fallback, but
     // it must not be the first track Spotify reaches on Skip when positively
     // verified alternatives exist. Preserve ranking within both groups.
-    playableUris: verifiedPlayableUris.length > 0
-      ? [...verifiedPlayableUris, ...uncheckedUris]
-      : uncheckedUris,
+    playableUris:
+      verifiedPlayableUris.length > 0 ? [...verifiedPlayableUris, ...uncheckedUris] : uncheckedUris,
     rejectedUris: uniqueUris.filter((uri) => rejected.has(uri)),
     uncheckedUris,
     checkedUris: uniqueUris.filter((uri) => checked.has(uri)),

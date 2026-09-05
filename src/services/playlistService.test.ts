@@ -10,14 +10,16 @@ describe("createSimilarPlaylist", () => {
     const rootlistApi = {
       marker: "rootlist",
       createPlaylist: vi.fn(function (this: { marker?: string }) {
-        if (this.marker !== "rootlist") throw new TypeError("Cannot read properties of undefined (reading '_events')")
+        if (this.marker !== "rootlist")
+          throw new TypeError("Cannot read properties of undefined (reading '_events')")
         return Promise.resolve("spotify:playlist:new-playlist")
       }),
     }
     const playlistApi = {
       marker: "playlist",
       add: vi.fn(function (this: { marker?: string }) {
-        if (this.marker !== "playlist") throw new TypeError("Cannot read properties of undefined (reading '_events')")
+        if (this.marker !== "playlist")
+          throw new TypeError("Cannot read properties of undefined (reading '_events')")
         return Promise.resolve()
       }),
     }

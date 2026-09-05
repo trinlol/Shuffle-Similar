@@ -1,5 +1,5 @@
-import type { TrackCandidate } from "../session/types"
 import { fisherYatesShuffle } from "../algorithm/shuffle"
+import type { TrackCandidate } from "../session/types"
 
 type PlaybackContext = {
   uri: string
@@ -25,10 +25,7 @@ export const runQueueOperationWithTimeout = async <T>(
 ): Promise<T> => {
   let timer: ReturnType<typeof setTimeout> | undefined
   const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(
-      () => reject(new QueueOperationTimeoutError(label)),
-      Math.max(1, timeoutMs)
-    )
+    timer = setTimeout(() => reject(new QueueOperationTimeoutError(label)), Math.max(1, timeoutMs))
   })
   try {
     return await Promise.race([Promise.resolve().then(operation), timeout])
@@ -86,7 +83,6 @@ export const isValidPlaybackContext = (uri?: string | null): uri is string => {
   }
 }
 
-
 export const resolvePlaybackContext = (
   contextUri?: string | null,
   albumUri?: string | null
@@ -126,7 +122,6 @@ export const resolveShuffleSimilarPlaybackContext = (
     }
   }
 
-
   return null
 }
 
@@ -140,10 +135,11 @@ export const detachFromPlaylistContext = async (albumUri?: string | null) => {
   try {
     const sessionId = Spicetify.Platform.PlayerAPI.getState().sessionId
     await runQueueOperationWithTimeout(
-      () => Spicetify.Platform.PlayerAPI.updateContext(sessionId, {
-        uri: fallback.uri,
-        url: fallback.url,
-      }),
+      () =>
+        Spicetify.Platform.PlayerAPI.updateContext(sessionId, {
+          uri: fallback.uri,
+          url: fallback.url,
+        }),
       "the playback context update"
     )
   } catch (error) {
@@ -205,9 +201,7 @@ const clearQueueSafe = async (): Promise<boolean> => {
 }
 
 const addTracksSafe = async (uris: string[]) => {
-  const items = uris
-    .filter((uri) => uri.startsWith("spotify:track:"))
-    .map((uri) => ({ uri }))
+  const items = uris.filter((uri) => uri.startsWith("spotify:track:")).map((uri) => ({ uri }))
 
   if (items.length === 0) return
 
@@ -281,8 +275,8 @@ const readPrivateUpcomingQueueUris = (): string[] => {
     const entries = queueState?.nextTracks ?? []
     return entries
       .map(readQueueUri)
-      .filter((uri: unknown): uri is string =>
-        typeof uri === "string" && uri.startsWith("spotify:track:")
+      .filter(
+        (uri: unknown): uri is string => typeof uri === "string" && uri.startsWith("spotify:track:")
       )
   } catch {
     return []
@@ -338,27 +332,24 @@ const waitForQueueConvergence = async (
   }
 
   const matches = options.strict
-      ? (expectedUris: string[], actualUris: string[]) => queueTakeoverSnapshotMatches(
-          expectedUris,
-          actualUris
-        )
+    ? (expectedUris: string[], actualUris: string[]) =>
+        queueTakeoverSnapshotMatches(expectedUris, actualUris)
     : queuePrefixMatches
   const requiredStableReads = Math.max(1, options.stableReads ?? 1)
   const requestedSet = new Set(requestedUris)
   let stableReads = 0
   let previousSnapshot = ""
   for (let attempt = 0; attempt < 10; attempt += 1) {
-    const publicUris = (options.strict ? getRawUpcomingQueueUris() : getUpcomingQueueUris())
-      .filter((uri) => uri.startsWith("spotify:track:"))
+    const publicUris = (options.strict ? getRawUpcomingQueueUris() : getUpcomingQueueUris()).filter(
+      (uri) => uri.startsWith("spotify:track:")
+    )
     const privateUris = readPrivateUpcomingQueueUris()
     const comparable = publicUris.length > 0 ? publicUris : privateUris
     actualUris = comparable
     const publicMatches = publicUris.length === 0 || matches(requestedUris, publicUris)
     const privateSnapshotIsRelevant =
-      publicUris.length < requestedUris.length &&
-      privateUris.some((uri) => requestedSet.has(uri))
-    const privateMatches =
-      !privateSnapshotIsRelevant || matches(requestedUris, privateUris)
+      publicUris.length < requestedUris.length && privateUris.some((uri) => requestedSet.has(uri))
+    const privateMatches = !privateSnapshotIsRelevant || matches(requestedUris, privateUris)
     const converged = options.strict
       ? publicMatches && privateMatches && comparable.length > 0
       : matches(requestedUris, comparable)
@@ -387,8 +378,7 @@ export const replaceUpcomingQueue = async (
     .filter((uri) => uri.startsWith("spotify:track:"))
     .filter((uri) => !currentUri || uri !== currentUri)
 
-  const previousUris = getUpcomingQueueUris()
-    .filter((uri) => uri.startsWith("spotify:track:"))
+  const previousUris = getUpcomingQueueUris().filter((uri) => uri.startsWith("spotify:track:"))
 
   if (tracks.length === 0) {
     if (!(await clearQueueSafe())) throw new Error("Spotify could not clear the upcoming queue")
@@ -435,8 +425,7 @@ export const replaceUpcomingQueueForNewMix = async (
   const tracks = [...new Set(upcomingUris)]
     .filter((uri) => uri.startsWith("spotify:track:"))
     .filter((uri) => uri !== currentUri)
-  const previousUris = getRawUpcomingQueueUris()
-    .filter((uri) => uri.startsWith("spotify:track:"))
+  const previousUris = getRawUpcomingQueueUris().filter((uri) => uri.startsWith("spotify:track:"))
 
   let lastCommit: QueueCommit = { requestedUris: tracks, actualUris: [], verified: false }
   for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -455,8 +444,9 @@ export const replaceUpcomingQueueForNewMix = async (
     })
     if (lastCommit.verified) {
       await wait(250)
-      const guardedSnapshot = getRawUpcomingQueueUris()
-        .filter((uri) => uri.startsWith("spotify:track:"))
+      const guardedSnapshot = getRawUpcomingQueueUris().filter((uri) =>
+        uri.startsWith("spotify:track:")
+      )
       if (queueTakeoverSnapshotMatches(tracks, guardedSnapshot)) {
         return { ...lastCommit, actualUris: guardedSnapshot }
       }
@@ -494,7 +484,6 @@ export const playSeedAndQueue = async (
   return await replaceUpcomingQueueForNewMix(seedUri, upcoming)
 }
 
-
 export const shuffleUpcomingInPlace = async (): Promise<boolean> => {
   const currentUri = Spicetify.Player.data?.item?.uri ?? null
   const upcoming = getUpcomingQueueUris().filter((uri) => uri.startsWith("spotify:track:"))
@@ -504,4 +493,3 @@ export const shuffleUpcomingInPlace = async (): Promise<boolean> => {
   await replaceUpcomingQueue(currentUri, shuffled)
   return true
 }
-

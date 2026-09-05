@@ -1,14 +1,11 @@
 import { describe, expect, it, vi } from "vitest"
-import {
-  TASTE_PROFILE_SCHEMA_VERSION,
-  type TasteProfileState,
-} from "../profile/tasteProfile"
+import { TASTE_PROFILE_SCHEMA_VERSION, type TasteProfileState } from "../profile/tasteProfile"
 import type { SeedMetadata, TrackCandidate } from "../session/types"
 import { attachSourceProvenance } from "../sources/provenance"
 import type { SmartConfig } from "../storage/settings"
 import { buildPlaylistBatch, buildSinglePoolBatch, buildTrackBatch } from "./progressiveBlend"
+import { type RankableCandidate, rankCandidatesV2, type SkipSignal } from "./rankingV2"
 import { getRecommendationDiagnostics } from "./recommendationPlannerV2"
-import { rankCandidatesV2, type RankableCandidate, type SkipSignal } from "./rankingV2"
 
 const seed: SeedMetadata = {
   uri: "spotify:track:seed",
@@ -207,15 +204,7 @@ describe("production Similar Mix v2 integration", () => {
       energy: 0.52,
       valence: 0.43,
     }
-    const before = buildTrackBatch(
-      seed,
-      0,
-      [],
-      [skippedNeighbor, alternative],
-      [],
-      settings,
-      1
-    )
+    const before = buildTrackBatch(seed, 0, [], [skippedNeighbor, alternative], [], settings, 1)
     const after = buildTrackBatch(
       seed,
       0,
@@ -224,17 +213,21 @@ describe("production Similar Mix v2 integration", () => {
       [],
       {
         ...settings,
-        skipFeedback: [{
-          artistUri: skippedNeighbor.artistUri,
-          profile: { tempo: 120, energy: 0.7, valence: 0.6 },
-        }],
+        skipFeedback: [
+          {
+            artistUri: skippedNeighbor.artistUri,
+            profile: { tempo: 120, energy: 0.7, valence: 0.6 },
+          },
+        ],
       },
       1
     )
 
     expect(before[0].uri).toBe(skippedNeighbor.uri)
     expect(after[0].uri).toBe(alternative.uri)
-    expect(getRecommendationDiagnostics(after)?.rankReasons["rank:skip-penalized"]).toBeGreaterThanOrEqual(1)
+    expect(
+      getRecommendationDiagnostics(after)?.rankReasons["rank:skip-penalized"]
+    ).toBeGreaterThanOrEqual(1)
   })
 
   it("bounds aggregate skip evidence instead of multiplying it toward zero", () => {
@@ -304,7 +297,9 @@ describe("production Similar Mix v2 integration", () => {
     )
 
     expect(batch[0].uri).toBe(positive.uri)
-    expect(getRecommendationDiagnostics(batch)?.rankReasons["rank:multi-source"]).toBeGreaterThanOrEqual(1)
+    expect(
+      getRecommendationDiagnostics(batch)?.rankReasons["rank:multi-source"]
+    ).toBeGreaterThanOrEqual(1)
     expect(getRecommendationDiagnostics(batch)?.slate.sourceCoverage).toBeGreaterThanOrEqual(2)
   })
 

@@ -5,9 +5,7 @@
     "preview": "preview-icon.png",
     "main": "shuffle-similar.js",
     "readme": "README.md",
-    "authors": [
-      { "name": "trinlol", "url": "https://github.com/trinlol" }
-    ],
+    "authors": [{ "name": "trinlol", "url": "https://github.com/trinlol" }],
     "tags": ["shuffle", "queue", "playback", "playlist", "recommendations"]
   }
 ]

@@ -2,6 +2,21 @@
 
 All notable changes to Shuffle Similar are documented in this file.
 
+## [2.1.2] - 2026-08-31
+
+### Fixed
+
+- Treats qualified version titles such as `Single Version`, `Album Version`, `Original Mix`, and `Bonus Track` as duplicates of the base recording, so a mix no longer plays the same song twice under different suffixes
+- Starts up on clients that expose the player before the settings menu and modal APIs, which the extension never used
+- Removed a `forceRefreshPools` start option that callers passed but the start path never read
+
+### Changed
+
+- The release banner version now derives from `package.json`, so a rebuilt bundle cannot report a stale version
+- The queue orchestrator no longer imports the DOM-bound playbar layer, making its refill, ownership, and recovery rules unit-testable
+- Added continuous integration running typecheck, tests, and a stale-release-bundle check
+
+
 ## [2.1.1] - 2026-08-16
 
 ### Fixed

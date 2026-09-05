@@ -1,25 +1,23 @@
-import { sessionManager } from "../session/SessionManager"
-import { enableAutoplayGuard, disableAutoplayGuard } from "../queue/autoplayGuard"
+import { disableAutoplayGuard, enableAutoplayGuard } from "../queue/autoplayGuard"
 import {
   clearSimilarMixRecovery,
   reshuffleFromCurrentTrack,
   reshuffleOnToggleOff,
 } from "../services/shuffleEngine"
-import {
-  registerShuffleSimilarUiSync,
-  shuffleSimilarStatus,
-} from "./shuffleSimilarUiState"
+import { sessionManager } from "../session/SessionManager"
+import { debounce } from "../utils/debounce"
+import { applyEnhanceIcon } from "./icons"
 import { enforceNativeShuffleOff, updateNativeShuffleGuard } from "./nativeShuffleGuard"
 import {
-  SHUFFLE_SIMILAR_TEST_ID,
   findNativeShuffleButton,
   placeElementBeforeShuffle,
   playbarMutationsAffectControls,
   removeLegacyExtensionButtons,
+  SHUFFLE_SIMILAR_TEST_ID,
   sanitizeClonedPlaybarButton,
   watchForLegacyExtensionButtons,
 } from "./playbarControls"
-import { applyEnhanceIcon } from "./icons"
+import { registerShuffleSimilarUiSync, shuffleSimilarStatus } from "./shuffleSimilarUiState"
 import {
   mapSimilarMixError,
   mountSimilarMixStatus,
@@ -27,7 +25,6 @@ import {
   type SimilarMixStatusMount,
   type SimilarMixStatusSnapshot,
 } from "./status"
-import { debounce } from "../utils/debounce"
 
 const STYLE_ID = "shuffle-similar-button-styles"
 const BUTTON_CLASS = "shuffle-similar-playbar-btn"
@@ -196,10 +193,7 @@ const stripActivePresentation = (button: HTMLButtonElement) => {
 const renderButton = (snapshot = shuffleSimilarStatus.getSnapshot()) => {
   if (!buttonElement) return
 
-  const presentation = getToggleButtonPresentation(
-    snapshot,
-    sessionManager.isToggleEnabled()
-  )
+  const presentation = getToggleButtonPresentation(snapshot, sessionManager.isToggleEnabled())
   buttonElement.setAttribute("aria-pressed", presentation.pressed ? "true" : "false")
   buttonElement.setAttribute("aria-busy", presentation.busy ? "true" : "false")
   buttonElement.dataset.similarMixState = snapshot.state
@@ -235,9 +229,7 @@ const placeButton = (): boolean => {
 }
 
 const createShuffleSimilarButton = (shuffleReference: HTMLButtonElement): HTMLButtonElement => {
-  const button = sanitizeClonedPlaybarButton(
-    shuffleReference.cloneNode(true) as HTMLButtonElement
-  )
+  const button = sanitizeClonedPlaybarButton(shuffleReference.cloneNode(true) as HTMLButtonElement)
 
   button.setAttribute("data-testid", TEST_ID)
   button.setAttribute("aria-label", "Turn on Similar Mix")

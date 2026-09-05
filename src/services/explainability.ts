@@ -28,18 +28,30 @@ export const explainSimilarMixTrack = (
   candidate: TrackCandidate,
   seed: SeedMetadata | null
 ): string => {
-  const sourceLabels = [...new Set(getSourceProvenance(candidate)
-    .map((source) => SOURCE_LABELS[source])
-    .filter((source): source is string => Boolean(source)))]
-    .slice(0, 2)
-  const source = sourceLabels.length > 0
-    ? `Selected from ${humanList(sourceLabels)}`
-    : "Selected to balance similarity, discovery, and variety"
+  const sourceLabels = [
+    ...new Set(
+      getSourceProvenance(candidate)
+        .map((source) => SOURCE_LABELS[source])
+        .filter((source): source is string => Boolean(source))
+    ),
+  ].slice(0, 2)
+  const source =
+    sourceLabels.length > 0
+      ? `Selected from ${humanList(sourceLabels)}`
+      : "Selected to balance similarity, discovery, and variety"
 
-  if (seed?.tempo != null && candidate.tempo != null && Math.abs(seed.tempo - candidate.tempo) <= 8) {
+  if (
+    seed?.tempo != null &&
+    candidate.tempo != null &&
+    Math.abs(seed.tempo - candidate.tempo) <= 8
+  ) {
     return `${source}; it has a close tempo to the seed track.`
   }
-  if (seed?.energy != null && candidate.energy != null && Math.abs(seed.energy - candidate.energy) <= 0.1) {
+  if (
+    seed?.energy != null &&
+    candidate.energy != null &&
+    Math.abs(seed.energy - candidate.energy) <= 0.1
+  ) {
     return `${source}; it has similar energy to the seed track.`
   }
   return `${source}.`

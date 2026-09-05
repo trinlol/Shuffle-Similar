@@ -1,9 +1,10 @@
+import { mkdirSync, readFileSync } from "node:fs"
+import { dirname, join } from "node:path"
+import { fileURLToPath } from "node:url"
 import * as esbuild from "esbuild"
-import { mkdirSync } from "fs"
-import { dirname, join } from "path"
-import { fileURLToPath } from "url"
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
+const { version } = JSON.parse(readFileSync(join(__dirname, "package.json"), "utf8"))
 const isWatch = process.argv.includes("--watch")
 const isLocal = process.argv.includes("--local")
 const isRelease = process.argv.includes("--release")
@@ -27,7 +28,13 @@ const buildOptions = {
   jsxFragment: "Spicetify.React.Fragment",
   logLevel: "info",
   banner: {
-    js: "// NAME: Shuffle Similar\n// DESCRIPTION: Adaptive, source-resilient Similar Mix queues with private automatic learning\n// VERSION: 2.1.1\n// AUTHORS: Shuffle Similar Contributors\n",
+    js: [
+      "// NAME: Shuffle Similar",
+      "// DESCRIPTION: Adaptive, source-resilient Similar Mix queues with private automatic learning",
+      `// VERSION: ${version}`,
+      "// AUTHORS: Shuffle Similar Contributors",
+      "",
+    ].join("\n"),
   },
 }
 

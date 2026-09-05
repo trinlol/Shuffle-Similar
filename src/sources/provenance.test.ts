@@ -8,14 +8,8 @@ import {
 describe("source provenance", () => {
   it("attaches inspectable provenance and merges it across duplicate candidates", () => {
     const merged = mergeCandidatesWithProvenance([
-      attachSourceProvenance(
-        { uri: "spotify:track:one", artistName: "Artist" },
-        "radio"
-      ),
-      attachSourceProvenance(
-        { uri: "spotify:track:one", albumName: "Album" },
-        "genre-era-search"
-      ),
+      attachSourceProvenance({ uri: "spotify:track:one", artistName: "Artist" }, "radio"),
+      attachSourceProvenance({ uri: "spotify:track:one", albumName: "Album" }, "genre-era-search"),
       attachSourceProvenance({ uri: "spotify:track:two" }, "inspired-by"),
     ])
 

@@ -1,8 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
-import {
-  resetQueuePlayabilityCache,
-  verifyQueuePlayability,
-} from "./playability"
+import { resetQueuePlayabilityCache, verifyQueuePlayability } from "./playability"
 
 afterEach(() => {
   resetQueuePlayabilityCache()
@@ -15,8 +12,10 @@ describe("verifyQueuePlayability", () => {
       Locale: { getLocale: () => "en_GB" },
       CosmosAsync: {
         get: vi.fn(async (url: string) => {
-          if (url.includes("unavailable")) return { uri: "spotify:track:unavailable", is_playable: false }
-          if (url.includes("local")) return { uri: "spotify:track:local", is_playable: true, is_local: true }
+          if (url.includes("unavailable"))
+            return { uri: "spotify:track:unavailable", is_playable: false }
+          if (url.includes("local"))
+            return { uri: "spotify:track:local", is_playable: true, is_local: true }
           return { uri: "spotify:track:good", is_playable: true }
         }),
       },
@@ -29,17 +28,18 @@ describe("verifyQueuePlayability", () => {
     ])
 
     expect(result.playableUris).toEqual(["spotify:track:good"])
-    expect(result.rejectedUris).toEqual([
-      "spotify:track:unavailable",
-      "spotify:track:local",
-    ])
+    expect(result.rejectedUris).toEqual(["spotify:track:unavailable", "spotify:track:local"])
     expect(result.degraded).toBe(false)
   })
 
   it("keeps syntactically valid tracks when Spotify's optional validation endpoint is unavailable", async () => {
     vi.stubGlobal("Spicetify", {
       Locale: { getLocale: () => "en_GB" },
-      CosmosAsync: { get: vi.fn(async () => { throw new Error("restricted") }) },
+      CosmosAsync: {
+        get: vi.fn(async () => {
+          throw new Error("restricted")
+        }),
+      },
     })
 
     const result = await verifyQueuePlayability(["spotify:track:one", "spotify:track:two"])
@@ -73,10 +73,7 @@ describe("verifyQueuePlayability", () => {
       "spotify:track:verified-two",
       "spotify:track:unchecked",
     ])
-    expect(result.checkedUris).toEqual([
-      "spotify:track:verified-one",
-      "spotify:track:verified-two",
-    ])
+    expect(result.checkedUris).toEqual(["spotify:track:verified-one", "spotify:track:verified-two"])
     expect(result.uncheckedUris).toEqual(["spotify:track:unchecked"])
     expect(result.degraded).toBe(true)
   })

@@ -1,4 +1,4 @@
-import { beforeAll, afterEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest"
 import { sessionManager } from "./SessionManager"
 import type { SeedMetadata, TrackCandidate } from "./types"
 
@@ -193,9 +193,11 @@ describe("SessionManager v2 invariants", () => {
   it("isolates confirmed play history when the Spotify account changes", async () => {
     memory.clear()
     const cosmosGet = vi.fn(async () => ({ account_id: "account-a" }))
-    ;(globalThis as unknown as {
-      Spicetify: { CosmosAsync: { get: typeof cosmosGet } }
-    }).Spicetify.CosmosAsync = { get: cosmosGet }
+    ;(
+      globalThis as unknown as {
+        Spicetify: { CosmosAsync: { get: typeof cosmosGet } }
+      }
+    ).Spicetify.CosmosAsync = { get: cosmosGet }
     expect(await sessionManager.initializeTasteIdentity()).toBe("account-a")
 
     const first = { uri: "spotify:track:account-a", artistUri: "spotify:artist:a" }
@@ -214,9 +216,11 @@ describe("SessionManager v2 invariants", () => {
     sessionManager.setQueuedUris([second.uri])
     expect(sessionManager.confirmPlayback(second.uri)).toBe(true)
 
-    expect(JSON.parse(memory.get("shuffleSimilar:playHistory:account:account-a") ?? "[]"))
-      .toEqual([first.uri])
-    expect(JSON.parse(memory.get("shuffleSimilar:playHistory:account:account-b") ?? "[]"))
-      .toEqual([second.uri])
+    expect(JSON.parse(memory.get("shuffleSimilar:playHistory:account:account-a") ?? "[]")).toEqual([
+      first.uri,
+    ])
+    expect(JSON.parse(memory.get("shuffleSimilar:playHistory:account:account-b") ?? "[]")).toEqual([
+      second.uri,
+    ])
   })
 })

@@ -13,12 +13,12 @@ import {
   canonicalTrackKey,
   createSeededRng,
   planSlateV2,
-  rankCandidatesV2,
   type RankableCandidate,
+  rankCandidatesV2,
 } from "../algorithm/rankingV2"
 import type { SeedMetadata, TrackCandidate } from "../session/types"
-import { getSmartConfig } from "../storage/settings"
 import { SourcePipeline } from "../sources/sourcePipeline"
+import { getSmartConfig } from "../storage/settings"
 
 beforeAll(() => {
   ;(globalThis as unknown as { Spicetify: unknown }).Spicetify = {
@@ -134,17 +134,27 @@ const buildLegacy = (candidates: RankableCandidate[], rngSeed: string): Rankable
     .filter((candidate) => candidate.provenance.some((hit) => hit.family === "profile"))
     .map(toLegacyCandidate)
   const settings = getSmartConfig(seed)
-  similar = excludeArtist(dedupeCandidates(filterPlayableCandidates(similar)), seed.artistUri, seed.artistName)
-  profile = excludeArtist(dedupeCandidates(filterPlayableCandidates(profile)), seed.artistUri, seed.artistName)
+  similar = excludeArtist(
+    dedupeCandidates(filterPlayableCandidates(similar)),
+    seed.artistUri,
+    seed.artistName
+  )
+  profile = excludeArtist(
+    dedupeCandidates(filterPlayableCandidates(profile)),
+    seed.artistUri,
+    seed.artistName
+  )
   const similarHistoryWeights = computeHistoryWeights(similar, [], settings.historyPenaltyWindow)
   const profileHistoryWeights = computeHistoryWeights(profile, [], settings.historyPenaltyWindow)
   const selected = withSeededMathRandom(rngSeed, () => {
     const output: TrackCandidate[] = []
     while (output.length < 20 && (similar.length > 0 || profile.length > 0)) {
       const blend = getBlendWeights(output.length + 1, settings)
-      const useSimilar = similar.length > 0 &&
+      const useSimilar =
+        similar.length > 0 &&
         (profile.length === 0 ||
-          Math.random() < blend.similarWeight / Math.max(0.0001, blend.similarWeight + blend.profileWeight))
+          Math.random() <
+            blend.similarWeight / Math.max(0.0001, blend.similarWeight + blend.profileWeight))
       const pool = useSimilar ? similar : profile
       const picked = pickFromPool(pool, {
         recentKeys: getRecentKeys(output, settings.artistSpacing),
@@ -174,7 +184,7 @@ const buildV2 = (candidates: RankableCandidate[], rngSeed: string): RankableCand
   }).items.map((item) => item.candidate)
 
 const artistKeys = (candidate: RankableCandidate): string[] =>
-  candidate.artistUris?.length ? candidate.artistUris : candidate.artistNames ?? []
+  candidate.artistUris?.length ? candidate.artistUris : (candidate.artistNames ?? [])
 
 const evaluateComparable = (items: RankableCandidate[]): ComparableMetrics => {
   const canonical = new Set<string>()
@@ -411,9 +421,7 @@ describe("Better Shuffle 2.0 independent recommendation gate", () => {
     ])
     expect(result.degraded).toBe(true)
     expect(result.values.flatMap((entry) => entry.value)).toEqual(sparse)
-    expect(result.diagnostics.find((entry) => entry.sourceId === "failed")?.status).toBe(
-      "error"
-    )
+    expect(result.diagnostics.find((entry) => entry.sourceId === "failed")?.status).toBe("error")
   })
 
   it("does not collapse same-title tracks when artist identity is missing", () => {

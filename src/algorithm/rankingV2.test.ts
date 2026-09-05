@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest"
 import {
-  planSlateV2,
-  rankCandidatesV2,
   type BlendFamily,
+  canonicalizeTrackTitle,
+  planSlateV2,
   type RankableCandidate,
+  rankCandidatesV2,
 } from "./rankingV2"
 
 const familyCandidates = (family: BlendFamily, count: number): RankableCandidate[] =>
@@ -14,6 +15,55 @@ const familyCandidates = (family: BlendFamily, count: number): RankableCandidate
     albumUri: `spotify:album:${family}-${index}`,
     provenance: [{ source: `${family}-source`, family, rank: 1 }],
   }))
+
+describe("canonicalizeTrackTitle", () => {
+  const bare = canonicalizeTrackTitle("Song")
+
+  it("collapses Spotify version and reissue suffixes onto the base title", () => {
+    const variants = [
+      "Song - Remastered 2011",
+      "Song (Remastered)",
+      "Song - Live at Wembley",
+      "Song (Radio Edit)",
+      "Song - Mono Version",
+      "Song (2019 Remaster)",
+      "Song (Deluxe Edition)",
+      // Qualified version nouns: the keyword does not follow the dash directly,
+      // so these previously survived as separate tracks and produced audible
+      // duplicates in a single mix.
+      "Song - Single Version",
+      "Song - Album Version",
+      "Song - Original Mix",
+      "Song (Bonus Track)",
+      "Song (Extended Mix)",
+    ]
+
+    for (const variant of variants) {
+      expect(canonicalizeTrackTitle(variant), variant).toBe(bare)
+    }
+  })
+
+  it("keeps distinct songs that merely begin with a version keyword", () => {
+    const distinct = [
+      "Live and Let Die",
+      "Mixed Emotions",
+      "Editorial",
+      "Single Ladies (Put a Ring on It)",
+      "Version City",
+      "Album of the Year",
+      "Original Sin",
+    ]
+
+    for (const title of distinct) {
+      expect(canonicalizeTrackTitle(title), title).not.toBe(bare)
+    }
+  })
+
+  it("treats a re-recording as its own track rather than a reissue", () => {
+    // "From The Vault" is a different recording, not a remaster of `Song`.
+    expect(canonicalizeTrackTitle("Song - From The Vault")).not.toBe(bare)
+  })
+})
 
 describe("rankCandidatesV2", () => {
   it("fuses weighted source ranks instead of discarding provenance", () => {
@@ -79,9 +129,9 @@ describe("rankCandidatesV2", () => {
     ])
     const plan = planSlateV2(ranked, { count: 3, rngSeed: "sparse" })
 
-    expect(ranked.every((candidate) => candidate.reasonCodes.includes("rank:partial-metadata"))).toBe(
-      true
-    )
+    expect(
+      ranked.every((candidate) => candidate.reasonCodes.includes("rank:partial-metadata"))
+    ).toBe(true)
     expect(plan.metrics.selectedCount).toBe(2)
   })
 
@@ -104,7 +154,9 @@ describe("rankCandidatesV2", () => {
         provenance: [{ source: "radio", family: "similar", rank: 1 }],
       },
     ]
-    const before = new Map(rankCandidatesV2(candidates).map((candidate) => [candidate.uri, candidate]))
+    const before = new Map(
+      rankCandidatesV2(candidates).map((candidate) => [candidate.uri, candidate])
+    )
     const after = new Map(
       rankCandidatesV2(candidates, {
         skipSignals: [
@@ -121,9 +173,7 @@ describe("rankCandidatesV2", () => {
       before.get("spotify:track:skip-neighbor")!.score
     )
     expect(after.get("spotify:track:skip-neighbor")!.score).toBeGreaterThan(0)
-    expect(after.get("spotify:track:skip-neighbor")!.reasonCodes).toContain(
-      "rank:skip-penalized"
-    )
+    expect(after.get("spotify:track:skip-neighbor")!.reasonCodes).toContain("rank:skip-penalized")
   })
 })
 

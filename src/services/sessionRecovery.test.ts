@@ -1,8 +1,5 @@
 import { describe, expect, it } from "vitest"
-import {
-  createSessionRecoveryStore,
-  shouldRecoverSession,
-} from "./sessionRecovery"
+import { createSessionRecoveryStore, shouldRecoverSession } from "./sessionRecovery"
 
 const seed = {
   uri: "spotify:track:seed",
@@ -26,7 +23,9 @@ describe("session recovery", () => {
     const snapshot = store.load(2_000)
     expect(snapshot).toMatchObject({ seed, position: 7 })
     expect(shouldRecoverSession(snapshot, "spotify:track:one", [])).toBe(true)
-    expect(shouldRecoverSession(snapshot, "spotify:track:outside", ["spotify:track:outside"])).toBe(false)
+    expect(shouldRecoverSession(snapshot, "spotify:track:outside", ["spotify:track:outside"])).toBe(
+      false
+    )
   })
 
   it("drops stale or malformed snapshots instead of reviving an unrelated session", () => {
@@ -45,13 +44,16 @@ describe("session recovery", () => {
 
   it("migrates v1 snapshots with empty adaptive state", () => {
     const values = new Map<string, string>()
-    values.set("shuffleSimilar:activeSession:v1", JSON.stringify({
-      version: 1,
-      savedAt: 1_000,
-      seed,
-      queuedUris: ["spotify:track:one"],
-      position: 2,
-    }))
+    values.set(
+      "shuffleSimilar:activeSession:v1",
+      JSON.stringify({
+        version: 1,
+        savedAt: 1_000,
+        seed,
+        queuedUris: ["spotify:track:one"],
+        position: 2,
+      })
+    )
     const store = createSessionRecoveryStore({
       get: (key) => values.get(key) ?? null,
       set: (key, value) => values.set(key, value),
