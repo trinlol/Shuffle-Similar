@@ -18,6 +18,7 @@ type CachedMetadata = Pick<
 >
 const SOURCE_TIMEOUT_MS = 6_000
 const MAX_ENRICHMENT_REQUESTS = 12
+const MAX_ENRICHMENT_REQUESTS_INSTRUMENTAL = 60
 const ENRICHMENT_CONCURRENCY = 3
 const featureCache = new BoundedCache<string, CachedFeatures>(512)
 const metadataCache = new BoundedCache<string, CachedMetadata>(512)
@@ -104,8 +105,10 @@ export const getSpotifySourceDiagnostics = () => ({
 })
 
 const enrichAudioFeaturesAndMetadata = async (
-  candidates: TrackCandidate[]
+  candidates: TrackCandidate[],
+  options: { maxFeatureRequests?: number } = {}
 ): Promise<TrackCandidate[]> => {
+  const maxFeatureRequests = options.maxFeatureRequests ?? MAX_ENRICHMENT_REQUESTS
   if (candidates.length === 0) return candidates
 
   const featuresMap = new Map<string, CachedFeatures>()
@@ -118,7 +121,7 @@ const enrichAudioFeaturesAndMetadata = async (
     .filter(
       (candidate, index, all) => all.findIndex((entry) => entry.uri === candidate.uri) === index
     )
-    .slice(0, MAX_ENRICHMENT_REQUESTS)
+    .slice(0, maxFeatureRequests)
 
   const fetchFeatures = async (candidate: TrackCandidate): Promise<boolean> => {
     const id = getUriId(candidate.uri)
@@ -169,7 +172,7 @@ const enrichAudioFeaturesAndMetadata = async (
     .filter(
       (candidate, index, all) => all.findIndex((entry) => entry.uri === candidate.uri) === index
     )
-    .slice(0, MAX_ENRICHMENT_REQUESTS)
+    .slice(0, maxFeatureRequests)
   await mapWithConcurrency(boundedMetadata, ENRICHMENT_CONCURRENCY, async (candidate) => {
     const id = getUriId(candidate.uri)
     if (!id) return
@@ -218,12 +221,67 @@ const enrichAudioFeaturesAndMetadata = async (
 export const enrichPlaylistTracks = async (tracks: TrackCandidate[]): Promise<TrackCandidate[]> =>
   enrichAudioFeaturesAndMetadata(tracks)
 
+export const SEED_INSTRUMENTALNESS_THRESHOLD = 0.9
+export const CANDIDATE_INSTRUMENTALNESS_FLOOR = 0.5
+
+export const INSTRUMENTAL_GENRE_PATTERNS =
+  /(soundtrack|score|classical|orchestral|ambient|instrumental|piano|string quartet|film score|movie tunes)/i
+
+/** True when genres or album name suggest an instrumental track. */
+const looksInstrumental = (candidate: TrackCandidate): boolean => {
+  if (candidate.albumName && INSTRUMENTAL_GENRE_PATTERNS.test(candidate.albumName)) return true
+  if (candidate.genres?.some((genre) => INSTRUMENTAL_GENRE_PATTERNS.test(genre))) return true
+  return false
+}
+
+export const isSeedInstrumental = (seed: SeedMetadata): boolean =>
+  seed.instrumentalness !== undefined && seed.instrumentalness >= SEED_INSTRUMENTALNESS_THRESHOLD
+
+/** Shared seed soundtrack classification (album name + genres), used by both the
+ * production call sites and the test-visible wrapper so the logic cannot diverge. */
+const isSeedSoundtrackLike = (seed: SeedMetadata): boolean =>
+  (seed.albumName &&
+    /(Soundtrack|Score|OST|Original Motion Picture|Original Soundtrack|Broadway|Musical)/i.test(
+      seed.albumName
+    )) ||
+  seed.genres.some((genre) =>
+    /(soundtrack|score|orchestral|movie tunes|show tunes|broadway|musical)/i.test(genre)
+  )
+
+/** Test-visible wrapper around the internal vocal/soundtrack filter. */
+export const filterInstrumentalsAndSoundtracksPublic = (
+  candidates: TrackCandidate[],
+  seed: SeedMetadata
+): TrackCandidate[] => {
+  const isSeedSdtk = isSeedSoundtrackLike(seed)
+  const isSeedVocal = seed.instrumentalness === undefined || seed.instrumentalness < 0.2
+  return filterInstrumentalsAndSoundtracks(
+    candidates,
+    isSeedVocal,
+    isSeedSdtk,
+    isSeedInstrumental(seed)
+  )
+}
+
 const filterInstrumentalsAndSoundtracks = (
   candidates: TrackCandidate[],
   isVocal: boolean,
-  isSoundtrack: boolean
+  isSoundtrack: boolean,
+  isInstrumentalSeed = false
 ): TrackCandidate[] => {
   return candidates.filter((candidate) => {
+    // 0. Instrumental-seed rule (hard): an instrumental seed only accepts
+    // instrumental candidates. Feature-known tracks must clear 0.5;
+    // feature-unknown tracks must pass the genre/album heuristic.
+    if (isInstrumentalSeed) {
+      if (candidate.instrumentalness !== undefined) {
+        if (candidate.instrumentalness < CANDIDATE_INSTRUMENTALNESS_FLOOR) return false
+        return true // feature-known instrumental: skip vocal/soundtrack rules
+      }
+      if (!looksInstrumental(candidate)) return false
+      return true
+    }
+
     // 1. Vocal Tracks Protection:
     if (isVocal && candidate.instrumentalness !== undefined && candidate.instrumentalness > 0.5) {
       return false
@@ -499,6 +557,9 @@ const fetchRecommendations = async (
   if (settings.deprioritizePopular) {
     url += `&max_popularity=70`
   }
+  if (isSeedInstrumental(seed)) {
+    url += `&min_instrumentalness=${CANDIDATE_INSTRUMENTALNESS_FLOOR}`
+  }
 
   const needsFeatures = settings.matchTempo || settings.matchEnergy || settings.matchValence
   if (needsFeatures) {
@@ -594,20 +655,21 @@ const fetchSimilarPoolInternal = async (
 
   if (!enrichResults) return candidates.filter((candidate) => candidate.uri !== seed.uri)
 
-  candidates = await enrichAudioFeaturesAndMetadata(candidates)
+  candidates = await enrichAudioFeaturesAndMetadata(
+    candidates,
+    isSeedInstrumental(seed) ? { maxFeatureRequests: MAX_ENRICHMENT_REQUESTS_INSTRUMENTAL } : {}
+  )
 
   // 2. Filter out instrumentals/soundtracks based on AGENTS.md rules
-  const isSeedSoundtrack =
-    (seed.albumName &&
-      /(Soundtrack|Score|OST|Original Motion Picture|Original Soundtrack|Broadway|Musical)/i.test(
-        seed.albumName
-      )) ||
-    seed.genres.some((genre) =>
-      /(soundtrack|score|orchestral|movie tunes|show tunes|broadway|musical)/i.test(genre)
-    )
+  const isSeedSoundtrack = isSeedSoundtrackLike(seed)
   const isSeedVocal = seed.instrumentalness === undefined || seed.instrumentalness < 0.2
 
-  candidates = filterInstrumentalsAndSoundtracks(candidates, isSeedVocal, isSeedSoundtrack)
+  candidates = filterInstrumentalsAndSoundtracks(
+    candidates,
+    isSeedVocal,
+    isSeedSoundtrack,
+    isSeedInstrumental(seed)
+  )
 
   return candidates.filter((candidate) => candidate.uri !== seed.uri)
 }
@@ -632,6 +694,9 @@ export const fetchPlaylistRecommendations = async (
 
   if (settings.deprioritizePopular) {
     url += `&max_popularity=70`
+  }
+  if (seeds.some((s) => isSeedInstrumental(s as SeedMetadata))) {
+    url += `&min_instrumentalness=${CANDIDATE_INSTRUMENTALNESS_FLOOR}`
   }
 
   const needsFeatures = settings.matchTempo || settings.matchEnergy || settings.matchValence
@@ -733,19 +798,17 @@ export const fetchPlaylistSimilarPool = async (
   ).length
   const isPlaylistVocal = vocalCount >= seedMetadatas.length / 2
 
-  const isPlaylistSoundtrack = seedMetadatas.some((s) => {
-    const isSoundtrackAlbum =
-      s.albumName &&
-      /(Soundtrack|Score|OST|Original Motion Picture|Original Soundtrack|Broadway|Musical)/i.test(
-        s.albumName
-      )
-    const isSoundtrackGenre = s.genres.some((g) =>
-      /(soundtrack|score|orchestral|movie tunes|show tunes|broadway|musical)/i.test(g)
-    )
-    return isSoundtrackAlbum || isSoundtrackGenre
-  })
+  const isPlaylistSoundtrack = seedMetadatas.some((s) => isSeedSoundtrackLike(s))
 
-  deduped = filterInstrumentalsAndSoundtracks(deduped, isPlaylistVocal, isPlaylistSoundtrack)
+  const isPlaylistInstrumental =
+    seedMetadatas.filter((s) => isSeedInstrumental(s)).length >= Math.ceil(seedMetadatas.length / 2)
+
+  deduped = filterInstrumentalsAndSoundtracks(
+    deduped,
+    isPlaylistVocal,
+    isPlaylistSoundtrack,
+    isPlaylistInstrumental
+  )
 
   return deduped
 }

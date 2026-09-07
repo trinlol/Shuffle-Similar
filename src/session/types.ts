@@ -7,6 +7,7 @@ export type TrackCandidate = {
   trackName?: string
   popularity?: number
   releaseYear?: number
+  genres?: string[]
   instrumentalness?: number
   tempo?: number
   energy?: number

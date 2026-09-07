@@ -6,6 +6,7 @@ import {
   enrichPlaylistTracks,
   fetchPlaylistSimilarPool,
   fetchSimilarPool,
+  filterInstrumentalsAndSoundtracksPublic,
   getSpotifySourceDiagnostics,
   resetSpotifySourceState,
   searchTracks,
@@ -302,5 +303,88 @@ describe("restricted Spotify source compatibility", () => {
     expect(audioRequests).toBeLessThanOrEqual(17)
     expect(metadataRequests).toBeLessThanOrEqual(17)
     expect(peakEnrichment).toBeLessThanOrEqual(3)
+  })
+})
+
+describe("instrumental-seed rule", () => {
+  beforeEach(() => resetSpotifySourceState())
+  afterEach(() => {
+    vi.restoreAllMocks()
+    vi.unstubAllGlobals()
+  })
+
+  it("keeps instrumental candidates and drops vocal ones for an instrumental seed", () => {
+    const scoreSeed: SeedMetadata = {
+      ...seed,
+      albumName: "Interstellar (Original Motion Picture Soundtrack)",
+      instrumentalness: 0.95,
+    }
+    const candidates: TrackCandidate[] = [
+      { uri: "spotify:track:inst", instrumentalness: 0.8, albumName: "Some Score" },
+      { uri: "spotify:track:vocal", instrumentalness: 0.05, albumName: "Pop Album" },
+    ]
+    const filtered = filterInstrumentalsAndSoundtracksPublic(candidates, scoreSeed)
+    expect(filtered.map((c) => c.uri)).toEqual(["spotify:track:inst"])
+  })
+
+  it("uses the genre/album heuristic for candidates without feature data", () => {
+    const scoreSeed: SeedMetadata = {
+      ...seed,
+      albumName: "Interstellar (Original Motion Picture Soundtrack)",
+      instrumentalness: 0.95,
+    }
+    const candidates: TrackCandidate[] = [
+      { uri: "spotify:track:score-album", albumName: "Dune (Original Motion Picture Soundtrack)" },
+      { uri: "spotify:track:classical", genres: ["classical", "orchestral"] },
+      { uri: "spotify:track:pop", albumName: "Pop Hits 2026" },
+    ]
+    const filtered = filterInstrumentalsAndSoundtracksPublic(candidates, scoreSeed)
+    expect(filtered.map((c) => c.uri)).toEqual([
+      "spotify:track:score-album",
+      "spotify:track:classical",
+    ])
+  })
+
+  it("allows soundtrack albums when the seed is an instrumental score", () => {
+    const scoreSeed: SeedMetadata = {
+      ...seed,
+      albumName: "Interstellar (Original Motion Picture Soundtrack)",
+      instrumentalness: 0.95,
+    }
+    const candidates: TrackCandidate[] = [
+      {
+        uri: "spotify:track:score",
+        instrumentalness: 0.9,
+        albumName: "Blade Runner 2049 (Original Score)",
+      },
+    ]
+    const filtered = filterInstrumentalsAndSoundtracksPublic(candidates, scoreSeed)
+    expect(filtered).toHaveLength(1)
+  })
+
+  it("does not trigger for neutral seeds (0.2 ≤ instrumentalness < 0.9)", () => {
+    const neutralSeed: SeedMetadata = { ...seed, instrumentalness: 0.5 }
+    const candidates: TrackCandidate[] = [{ uri: "spotify:track:whatever", instrumentalness: 0.1 }]
+    const filtered = filterInstrumentalsAndSoundtracksPublic(candidates, neutralSeed)
+    expect(filtered).toHaveLength(1)
+  })
+
+  it("adds min_instrumentalness to recommendations URL for instrumental seeds", async () => {
+    const urls: string[] = []
+    const get = vi.fn(async (url: string) => {
+      if (url.includes("/v1/recommendations")) {
+        urls.push(url)
+        return { tracks: [] }
+      }
+      return {}
+    })
+    vi.stubGlobal("Spicetify", {
+      Locale: { getLocale: () => "en_GB" },
+      URI: { fromString: (uri: string) => ({ id: uri.split(":").pop() }) },
+      CosmosAsync: { get },
+    })
+    const scoreSeed: SeedMetadata = { ...seed, instrumentalness: 0.95 }
+    await fetchSimilarPool(scoreSeed, getSmartConfig(scoreSeed))
+    expect(urls.some((url) => url.includes("min_instrumentalness=0.5"))).toBe(true)
   })
 })
