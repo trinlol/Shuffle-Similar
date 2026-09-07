@@ -279,13 +279,12 @@ export const fetchProfilePool = async (seed: SeedMetadata): Promise<TrackCandida
   // heard" can only produce replays by construction. Playlist tracks are
   // excluded from the queue by the playlist-membership rule, so sampling
   // them here would be wasted fetches.
-  const [likedResult] = await Promise.allSettled([fetchLikedTracks()])
+  // fetchLikedTracks never rejects (it degrades to [] internally).
+  const liked = await fetchLikedTracks()
 
-  const liked = likedResult.status === "fulfilled" ? likedResult.value : []
+  const obscureLiked = sortByObscurity(liked).slice(0, 120)
 
-  const shuffledLiked = sortByObscurity(liked).slice(0, 120)
-
-  return mergeCandidatesWithProvenance(shuffledLiked).filter(
+  return mergeCandidatesWithProvenance(obscureLiked).filter(
     (candidate) => candidate.uri !== seed.uri
   )
 }

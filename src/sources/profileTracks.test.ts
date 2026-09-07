@@ -74,7 +74,7 @@ describe("profile source fallbacks", () => {
     ])
   })
 
-  it("returns liked tracks when Rootlist never settles", async () => {
+  it("returns liked tracks while unrelated platform APIs hang", async () => {
     vi.useFakeTimers()
     vi.spyOn(console, "info").mockImplementation(() => undefined)
     vi.stubGlobal("Spicetify", {
@@ -145,8 +145,9 @@ describe("profile source fallbacks", () => {
     expect(peak).toBeLessThanOrEqual(3)
   })
 
-  it("fetchProfilePool excludes recently-played tracks and playlist-sampled tracks", async () => {
+  it("fetchProfilePool fetches only liked tracks (no recently-played, no playlist sampling)", async () => {
     const calls: string[] = []
+    const rootlistSpy = vi.fn().mockResolvedValue({ items: [] })
     const get = vi.fn(async (url: string) => {
       calls.push(url)
       if (url.includes("/me/tracks")) {
@@ -160,13 +161,18 @@ describe("profile source fallbacks", () => {
       }
       return {}
     })
-    vi.stubGlobal("Spicetify", { CosmosAsync: { get } })
+    vi.stubGlobal("Spicetify", {
+      CosmosAsync: { get },
+      Platform: { RootlistAPI: { getContents: rootlistSpy } },
+    })
 
     const pool = await fetchProfilePool(seed)
 
     expect(pool.map((c) => c.uri)).toContain("spotify:track:liked")
     expect(pool.map((c) => c.uri)).not.toContain("spotify:track:recent")
     expect(calls.some((url) => url.includes("recently-played"))).toBe(false)
+    expect(calls.every((url) => url.includes("/me/tracks"))).toBe(true)
+    expect(rootlistSpy).not.toHaveBeenCalled()
   })
 
   it("returns completed pages when a later fetchAllPlaylistTracks page hangs", async () => {
