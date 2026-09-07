@@ -169,6 +169,37 @@ export const fetchRecentlyPlayedTracks = async (): Promise<TrackCandidate[]> => 
   }
 }
 
+export type RecentlyPlayedEntry = { uri: string; playedAt: number }
+
+type RecentlyPlayedResponse = {
+  items?: Array<{ track?: { uri?: string } | null; played_at?: string } | null>
+}
+
+/** Like fetchRecentlyPlayedTracks but keeps each entry's `played_at` epoch,
+ * used to merge Spotify's own history into the play-history blackout window. */
+export const fetchRecentlyPlayedTracksWithTimestamps = async (): Promise<RecentlyPlayedEntry[]> => {
+  try {
+    const response = await runWithTimeout<RecentlyPlayedResponse>(
+      () =>
+        Spicetify.CosmosAsync.get(
+          "https://api.spotify.com/v1/me/player/recently-played?limit=50"
+        ) as Promise<RecentlyPlayedResponse>,
+      PROFILE_SOURCE_TIMEOUT_MS
+    )
+    return (response?.items ?? [])
+      .map((item) => ({
+        uri: item?.track?.uri as string | undefined,
+        playedAt: Date.parse(item?.played_at ?? "") || 0,
+      }))
+      .filter(
+        (entry): entry is RecentlyPlayedEntry =>
+          Boolean(entry.uri?.startsWith("spotify:track:")) && entry.playedAt > 0
+      )
+  } catch {
+    return []
+  }
+}
+
 type PlaylistContents = {
   items?: Array<{ uri: string; isPlayable?: boolean; metadata?: Record<string, string> }>
 }

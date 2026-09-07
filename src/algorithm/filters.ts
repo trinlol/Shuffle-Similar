@@ -1,6 +1,7 @@
 import { scoreTasteAffinity, type TasteProfileState } from "../profile/tasteProfile"
 import type { AcousticProfile, SkipFeedback, TrackCandidate } from "../session/types"
 import { loadPlayHistoryUris, type PlayHistoryEntry } from "../storage/settings"
+import { CANDIDATE_INSTRUMENTALNESS_FLOOR, looksInstrumental } from "../utils/instrumental"
 import { pickWeightedRandom, popularityWeight } from "./shuffle"
 
 export const dedupeCandidates = (candidates: TrackCandidate[]): TrackCandidate[] => {
@@ -338,4 +339,46 @@ export const applyRecentPlayBlackout = (
   if (blackedOut.size === 0) return candidates
   const survivors = candidates.filter((candidate) => !blackedOut.has(candidate.uri))
   return survivors.length >= BLACKOUT_RELAX_MIN_SURVIVORS ? survivors : candidates
+}
+
+export type EligibilityContext = {
+  playlistMemberUris: ReadonlySet<string>
+  playHistory: readonly PlayHistoryEntry[]
+  requireInstrumental: boolean
+  seedUri: string
+  now: number
+}
+
+/**
+ * Central choke point every candidate pool passes through before ranking:
+ * playability → seed/canonical exclusion → 14-day blackout → playlist
+ * membership → vocals match. Playlist membership and vocals match are hard,
+ * non-relaxable stages.
+ */
+export const filterEligibleCandidates = (
+  candidates: TrackCandidate[],
+  context: EligibilityContext
+): TrackCandidate[] => {
+  let pool = filterPlayableCandidates(candidates).filter(
+    (candidate) => candidate.uri !== context.seedUri
+  )
+  pool = applyRecentPlayBlackout(pool, context.playHistory, context.now)
+  if (context.playlistMemberUris.size > 0) {
+    pool = pool.filter((candidate) => !context.playlistMemberUris.has(candidate.uri))
+  }
+  if (context.requireInstrumental) {
+    pool = pool.filter((candidate) => {
+      if (candidate.instrumentalness !== undefined) {
+        return candidate.instrumentalness >= CANDIDATE_INSTRUMENTALNESS_FLOOR
+      }
+      // No audio features: judge by the genre/album heuristic. When the
+      // candidate carries no album or genre signal at all there is nothing
+      // to judge on, so it passes rather than being over-excluded.
+      const hasHeuristicSignal =
+        candidate.albumName !== undefined || (candidate.genres?.length ?? 0) > 0
+      if (!hasHeuristicSignal) return true
+      return looksInstrumental(candidate)
+    })
+  }
+  return pool
 }

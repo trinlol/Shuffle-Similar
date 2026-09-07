@@ -4,6 +4,7 @@ import {
   fetchAllPlaylistTracks,
   fetchProfilePool,
   fetchRecentlyPlayedTracks,
+  fetchRecentlyPlayedTracksWithTimestamps,
   fetchTopTracks,
   PROFILE_SOURCE_TIMEOUT_MS,
 } from "./profileTracks"
@@ -71,6 +72,25 @@ describe("profile source fallbacks", () => {
         uri: "spotify:track:recent",
         artistUri: "spotify:artist:recent",
       }),
+    ])
+  })
+
+  it("keeps played_at timestamps and drops entries without a valid track", async () => {
+    const playedAt = "2026-09-05T12:00:00.000Z"
+    vi.stubGlobal("Spicetify", {
+      CosmosAsync: {
+        get: vi.fn().mockResolvedValue({
+          items: [
+            { track: { uri: "spotify:track:x" }, played_at: playedAt },
+            { played_at: playedAt },
+            { track: { uri: "spotify:track:no-time" }, played_at: "not-a-date" },
+          ],
+        }),
+      },
+    })
+
+    await expect(fetchRecentlyPlayedTracksWithTimestamps()).resolves.toEqual([
+      { uri: "spotify:track:x", playedAt: Date.parse(playedAt) },
     ])
   })
 

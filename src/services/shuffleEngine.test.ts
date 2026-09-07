@@ -46,12 +46,14 @@ vi.mock("../sources/similarTracks", () => ({
   fetchSimilarPool: async () => plannedBatch,
   fetchPlaylistSimilarPool: async () => plannedBatch,
   enrichPlaylistTracks: async (tracks: unknown[]) => tracks,
+  isSeedInstrumental: () => false,
 }))
 
 vi.mock("../sources/profileTracks", () => ({
   fetchProfilePool: async () => [],
   fetchAllPlaylistTracks: async () => [],
   fetchTopTracks: async () => [],
+  fetchRecentlyPlayedTracksWithTimestamps: async () => [],
 }))
 
 vi.mock("../sources/artistTracks", () => ({

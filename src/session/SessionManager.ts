@@ -7,9 +7,11 @@ import {
   type TasteProfileStore,
   type TasteSentiment,
 } from "../profile/tasteProfile"
+import { fetchRecentlyPlayedTracksWithTimestamps } from "../sources/profileTracks"
 import {
   appendPlayHistory,
   getSmartConfig,
+  loadPlayHistory,
   loadPlayHistoryUris,
   PLAY_HISTORY_STORAGE_KEY,
 } from "../storage/settings"
@@ -185,6 +187,17 @@ export const sessionManager = {
   getPosition: () => state.position,
   getPlayedUris: () => [...state.playedUris],
   getPlayHistory: () => loadPlayHistoryUris(playHistoryStorageKey),
+  getPlayHistoryEntries: () => loadPlayHistory(playHistoryStorageKey),
+  mergeRecentlyPlayedIntoHistory: async (): Promise<void> => {
+    try {
+      const recent = await fetchRecentlyPlayedTracksWithTimestamps()
+      for (const entry of recent) {
+        appendPlayHistory(entry.uri, 400, playHistoryStorageKey, entry.playedAt)
+      }
+    } catch {
+      // Recently-played merge is best-effort.
+    }
+  },
   getQueuedUris: () => [...state.queuedUris],
   getSimilarPool: () => state.similarPool,
   getProfilePool: () => state.profilePool,

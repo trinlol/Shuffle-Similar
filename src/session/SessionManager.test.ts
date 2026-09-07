@@ -27,6 +27,27 @@ const seed: SeedMetadata = {
 }
 
 describe("SessionManager v2 invariants", () => {
+  it("merges recently-played timestamps into the play history store", async () => {
+    memory.clear()
+    const playedAt = "2026-09-05T12:00:00.000Z"
+    ;(
+      globalThis as unknown as {
+        Spicetify: { CosmosAsync: { get: () => Promise<unknown> } }
+      }
+    ).Spicetify.CosmosAsync = {
+      get: async () => ({
+        items: [{ track: { uri: "spotify:track:recent" }, played_at: playedAt }],
+      }),
+    }
+
+    await sessionManager.mergeRecentlyPlayedIntoHistory()
+
+    const stored = JSON.parse(
+      memory.get("shuffleSimilar:playHistory:anonymous-install") ?? "[]"
+    ) as Array<{ uri: string; playedAt: number }>
+    expect(stored).toEqual([{ uri: "spotify:track:recent", playedAt: Date.parse(playedAt) }])
+  })
+
   it("learns from generated playlist candidates registered after planning", () => {
     const generated: TrackCandidate = {
       uri: "spotify:track:generated",

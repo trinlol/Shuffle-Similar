@@ -5,6 +5,7 @@ import { getSmartConfig, type PlayHistoryEntry } from "../storage/settings"
 import {
   applyRecentPlayBlackout,
   feedbackWeight,
+  filterEligibleCandidates,
   normalizeTempo,
   playlistAffinityWeight,
   recentPlayPenalty,
@@ -220,5 +221,78 @@ describe("recent-play blackout", () => {
 
   it("never-played tracks get no penalty", () => {
     expect(recentPlayPenalty(0, now)).toBe(0)
+  })
+})
+
+describe("filterEligibleCandidates choke point", () => {
+  const now = Date.UTC(2026, 8, 7)
+
+  it("applies playlist membership, blackout, and vocals match in order", () => {
+    // Fillers keep the pool above the blackout's 15-survivor relaxation
+    // threshold so the blackout stage actually removes `recent`.
+    const fillers = Array.from({ length: 15 }, (_, i) => ({
+      uri: `spotify:track:filler-${i}`,
+    }))
+    const candidates: TrackCandidate[] = [
+      { uri: "spotify:track:clean" },
+      { uri: "spotify:track:in-playlist" },
+      { uri: "spotify:track:recent", instrumentalness: 0.9 },
+      { uri: "spotify:track:vocal", instrumentalness: 0.05 },
+      ...fillers,
+    ]
+    const result = filterEligibleCandidates(candidates, {
+      playlistMemberUris: new Set(["spotify:track:in-playlist"]),
+      playHistory: [{ uri: "spotify:track:recent", playedAt: now - 2 * 24 * 60 * 60 * 1_000 }],
+      requireInstrumental: true,
+      seedUri: "spotify:track:seed",
+      now,
+    })
+    const uris = result.map((t) => t.uri)
+    expect(uris).toContain("spotify:track:clean")
+    expect(uris).not.toContain("spotify:track:in-playlist")
+    expect(uris).not.toContain("spotify:track:recent")
+    expect(uris).not.toContain("spotify:track:vocal")
+    expect(uris.filter((uri) => !uri.startsWith("spotify:track:filler-"))).toEqual([
+      "spotify:track:clean",
+    ])
+  })
+
+  it("keeps feature-unknown candidates that look instrumental when the rule is active", () => {
+    const candidates: TrackCandidate[] = [
+      { uri: "spotify:track:score", albumName: "Dune (Original Motion Picture Soundtrack)" },
+      { uri: "spotify:track:pop", albumName: "Pop Hits" },
+    ]
+    const result = filterEligibleCandidates(candidates, {
+      playlistMemberUris: new Set(),
+      playHistory: [],
+      requireInstrumental: true,
+      seedUri: "spotify:track:seed",
+      now,
+    })
+    expect(result.map((t) => t.uri)).toEqual(["spotify:track:score"])
+  })
+
+  it("passes everything through when no rule inputs are present", () => {
+    const candidates: TrackCandidate[] = [{ uri: "spotify:track:any" }]
+    const result = filterEligibleCandidates(candidates, {
+      playlistMemberUris: new Set(),
+      playHistory: [],
+      requireInstrumental: false,
+      seedUri: "spotify:track:seed",
+      now,
+    })
+    expect(result).toHaveLength(1)
+  })
+
+  it("excludes the seed before the other stages", () => {
+    const candidates: TrackCandidate[] = [{ uri: "spotify:track:seed" }]
+    const result = filterEligibleCandidates(candidates, {
+      playlistMemberUris: new Set(),
+      playHistory: [],
+      requireInstrumental: false,
+      seedUri: "spotify:track:seed",
+      now,
+    })
+    expect(result).toHaveLength(0)
   })
 })

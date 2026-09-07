@@ -1,6 +1,13 @@
 import { excludeArtist } from "../algorithm/filters"
 import type { SeedMetadata, TrackCandidate } from "../session/types"
 import type { SmartConfig } from "../storage/settings"
+import {
+  CANDIDATE_INSTRUMENTALNESS_FLOOR,
+  INSTRUMENTAL_PATTERNS,
+  looksInstrumental,
+  SEED_INSTRUMENTALNESS_THRESHOLD,
+  VOCAL_INDICATOR_PATTERNS,
+} from "../utils/instrumental"
 import { getMarket } from "../utils/playability"
 import { getUriId } from "../utils/uri"
 import { attachSourceProvenance, mergeCandidatesWithProvenance } from "./provenance"
@@ -225,30 +232,14 @@ const enrichAudioFeaturesAndMetadata = async (
 export const enrichPlaylistTracks = async (tracks: TrackCandidate[]): Promise<TrackCandidate[]> =>
   enrichAudioFeaturesAndMetadata(tracks)
 
-export const SEED_INSTRUMENTALNESS_THRESHOLD = 0.9
-export const CANDIDATE_INSTRUMENTALNESS_FLOOR = 0.5
-
-export const INSTRUMENTAL_GENRE_PATTERNS =
-  /(soundtrack|\bscore\b|\bclassical\b|\borchestral\b|\bambient\b|\binstrumental\b|\bpiano\b|\bquartet\b|\bfilm score\b|\bmovie tunes\b)/i
-
-/** Vocal indicators veto the instrumental heuristic: an album or genre that names
- * vocals/lyrics is a vocal release even when an instrumental term also matches
- * (e.g. "High Score Hits", "Piano Man", "Classical Crossover Vocal"). */
-const VOCAL_INDICATOR_PATTERNS =
-  /\b(vocal|vocals|lyrics|sung|sing|sings|feat\.|greatest hits|live at)\b/i
-
-/** True when genres or album name suggest an instrumental track. */
-const looksInstrumental = (candidate: TrackCandidate): boolean => {
-  const albumName = candidate.albumName
-  const albumMatches =
-    albumName !== undefined &&
-    INSTRUMENTAL_GENRE_PATTERNS.test(albumName) &&
-    !VOCAL_INDICATOR_PATTERNS.test(albumName)
-  const genreMatches = candidate.genres?.some(
-    (genre) => INSTRUMENTAL_GENRE_PATTERNS.test(genre) && !VOCAL_INDICATOR_PATTERNS.test(genre)
-  )
-  return Boolean(albumMatches || genreMatches)
-}
+// Instrumental heuristics live in utils/instrumental (shared with the
+// eligibility choke point). Legacy names are re-exported so existing
+// consumers and tests keep their import paths.
+export {
+  CANDIDATE_INSTRUMENTALNESS_FLOOR,
+  SEED_INSTRUMENTALNESS_THRESHOLD,
+} from "../utils/instrumental"
+export const INSTRUMENTAL_GENRE_PATTERNS = INSTRUMENTAL_PATTERNS
 
 export const isSeedInstrumental = (seed: SeedMetadata): boolean =>
   seed.instrumentalness !== undefined && seed.instrumentalness >= SEED_INSTRUMENTALNESS_THRESHOLD

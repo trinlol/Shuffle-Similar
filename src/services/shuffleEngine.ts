@@ -1,3 +1,4 @@
+import { filterEligibleCandidates } from "../algorithm/filters"
 import {
   buildPlaylistBatch,
   buildSinglePoolBatch,
@@ -35,6 +36,7 @@ import {
   enrichPlaylistTracks,
   fetchPlaylistSimilarPool,
   fetchSimilarPool,
+  isSeedInstrumental,
 } from "../sources/similarTracks"
 import { fetchSeedMetadata } from "../sources/trackMetadata"
 import { getSmartConfig } from "../storage/settings"
@@ -43,6 +45,7 @@ import { getUriId } from "../utils/uri"
 import { assertQueueCompatibility } from "./compatibility"
 import { LatestMixCoordinator } from "./mixCoordinator"
 import { suppressNativeShuffle } from "./playbackEffects"
+import { buildPlaylistMembershipSet } from "./playlistMembership"
 import { createPrefetchCache } from "./prefetchCache"
 import {
   buildHistoryRelaxedExclusions,
@@ -86,6 +89,32 @@ const getSessionConfig = (seed?: SeedMetadata | null) => {
     tasteContextKey: sessionManager.getTasteContextKey(now),
   }
 }
+
+let playlistMembership: Set<string> = new Set()
+let membershipRefreshInFlight: Promise<void> | null = null
+
+const refreshPlaylistMembership = (): Promise<void> => {
+  if (membershipRefreshInFlight) return membershipRefreshInFlight
+  membershipRefreshInFlight = (async () => {
+    try {
+      playlistMembership = await buildPlaylistMembershipSet()
+    } catch {
+      // Keep previous set; exclusion silently doesn't apply.
+    }
+  })()
+  return membershipRefreshInFlight.finally(() => {
+    membershipRefreshInFlight = null
+  })
+}
+
+/** Shared context for the central eligibility choke point. */
+const buildEligibilityContext = (seed: SeedMetadata) => ({
+  playlistMemberUris: playlistMembership,
+  playHistory: sessionManager.getPlayHistoryEntries(),
+  requireInstrumental: isSeedInstrumental(seed),
+  seedUri: seed.uri,
+  now: Date.now(),
+})
 
 const queueUrisFromBatch = async (batch: readonly TrackCandidate[]): Promise<string[]> => {
   const syntacticallyPlayable = await filterPlayableUris(batch.map((track) => track.uri))
@@ -136,7 +165,12 @@ const buildPlaylistPlayableBatch = async (excludeUpcoming = true) => {
   })
 
   // Smart Mode: blend playlist tracks (50% weight) with similar recommendations (50% weight)
-  const similarPool = await fetchPlaylistSimilarPool(playlistTracks, settings, 5)
+  // Playlist tracks are references, not outputs — only the similar pool passes
+  // the eligibility choke point.
+  const similarPool = filterEligibleCandidates(
+    await fetchPlaylistSimilarPool(playlistTracks, settings, 5),
+    buildEligibilityContext(seed!)
+  )
   sessionManager.registerCandidates([...playlistTracks, ...similarPool])
 
   let batch = buildPlaylistBatch(
@@ -197,16 +231,23 @@ const buildArtistPlayableBatch = async (excludeUpcoming = true) => {
     purpose: excludeUpcoming ? "refill" : "rerank",
   })
 
-  const similarTracks = await fetchSimilarPool(seed, settings)
-  sessionManager.registerCandidates([...artistTracks, ...similarTracks])
+  // Artist discography is queued output in this mode, so both pools pass the
+  // eligibility choke point with requireInstrumental honoring the seed.
+  const eligibilityContext = buildEligibilityContext(seed)
+  const similarPool = filterEligibleCandidates(
+    await fetchSimilarPool(seed, settings),
+    eligibilityContext
+  )
+  const artistPool = filterEligibleCandidates(artistTracks, eligibilityContext)
+  sessionManager.registerCandidates([...artistTracks, ...similarPool])
 
   // Smart Mode: blend artist discography with similar recommendations
   let batch = buildTrackBatch(
     seed,
     sessionManager.getPosition(),
     excludeUris,
-    similarTracks,
-    artistTracks,
+    similarPool,
+    artistPool,
     settings,
     settings.initialQueueSize,
     sessionManager.getPlayHistory(),
@@ -218,7 +259,7 @@ const buildArtistPlayableBatch = async (excludeUpcoming = true) => {
   if (batch.length === 0) {
     batch = buildSinglePoolBatch(
       seed,
-      artistTracks,
+      artistPool,
       excludeUris,
       settings,
       settings.initialQueueSize,
@@ -236,7 +277,7 @@ const buildArtistPlayableBatch = async (excludeUpcoming = true) => {
   return {
     playableQueueUris: queueUris,
     settings,
-    similarCount: artistTracks.length,
+    similarCount: artistPool.length,
     profileCount: 0,
   }
 }
@@ -254,6 +295,13 @@ const buildPlayableBatch = async (
   }
 
   let { similar, profile, settings } = await ensurePools(seed, forceRefreshPools)
+
+  // Central eligibility choke point: playability → seed exclusion → blackout →
+  // playlist membership → vocals match. An empty post-gate pool naturally
+  // triggers the existing not-found paths below.
+  const eligibilityContext = buildEligibilityContext(seed)
+  similar = filterEligibleCandidates(similar, eligibilityContext)
+  profile = filterEligibleCandidates(profile, eligibilityContext)
 
   if (similar.length === 0 && profile.length === 0) {
     throw new Error("Could not find tracks for Shuffle Similar. Try another song.")
@@ -546,6 +594,8 @@ export const startShuffleSimilar = async (
 ) => {
   if (!options.buildOnly) assertQueueCompatibility()
   await sessionManager.initializeTasteIdentity()
+  if (playlistMembership.size === 0) void refreshPlaylistMembership()
+  await sessionManager.mergeRecentlyPlayedIntoHistory()
   const generation = options.buildOnly ? null : liveMixCoordinator.begin()
   const seed = await fetchSeedMetadata(seedUri)
   if (generation != null) liveMixCoordinator.assertCurrent(generation)
@@ -649,6 +699,10 @@ const runRefillQueueIfNeeded = async (): Promise<void> => {
     const ownedUpcoming = sessionManager.getQueuedUris()
     const upcoming = ownedUpcoming.length
     if (upcoming >= settings.refillThreshold) return
+
+    // Refresh the membership set before the next batch build so freshly
+    // followed playlists are excluded too.
+    void refreshPlaylistMembership()
 
     const playableQueueUris =
       prefetchCache.take(sessionManager.getRevision(), prefetchGeneration) ??
