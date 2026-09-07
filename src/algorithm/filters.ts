@@ -309,7 +309,8 @@ const RECENT_PLAY_PENALTY_MS = 45 * 24 * 60 * 60 * 1_000
 const RECENT_PLAY_PENALTY_MAX = 0.35
 const BLACKOUT_RELAX_MIN_SURVIVORS = 15
 
-/** 0..0.35 penalty for plays between 14 and 45 days old; 0 outside that band. */
+/** 0.35 inside the 14-day blackout window, decaying linearly to 0 between
+ * 14 and 45 days; 0 beyond 45 days and for never-played entries. */
 export const recentPlayPenalty = (playedAt: number, now: number): number => {
   if (playedAt <= 0) return 0
   const age = now - playedAt
