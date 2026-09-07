@@ -107,7 +107,7 @@ describe("profile source fallbacks", () => {
     )
   })
 
-  it("returns healthy playlists when one playlist hangs and never exceeds shared concurrency", async () => {
+  it("never exceeds shared playlist concurrency across concurrent playlist fetches", async () => {
     vi.useFakeTimers()
     let active = 0
     let peak = 0
@@ -121,26 +121,19 @@ describe("profile source fallbacks", () => {
     })
     vi.stubGlobal("Spicetify", {
       URI: { fromString: (uri: string) => ({ id: uri.split(":").pop() }) },
-      CosmosAsync: { get: vi.fn().mockResolvedValue({ items: [], next: null }) },
-      Platform: {
-        RootlistAPI: {
-          getContents: vi.fn().mockResolvedValue({
-            items: ["one", "hanging", "two", "three", "four"].map((id) => ({
-              type: "playlist",
-              uri: `spotify:playlist:${id}`,
-              name: id,
-            })),
-          }),
-        },
-        PlaylistAPI: { getContents: playlistGet },
-      },
+      Platform: { PlaylistAPI: { getContents: playlistGet } },
     })
 
-    const pending = fetchProfilePool(seed)
+    const pending = Promise.all(
+      ["one", "hanging", "two", "three", "four"].map((id) =>
+        fetchAllPlaylistTracks(`spotify:playlist:${id}`)
+      )
+    )
     await vi.advanceTimersByTimeAsync(PROFILE_SOURCE_TIMEOUT_MS + 1)
-    const result = await pending
+    const results = await pending
 
-    expect(result.map((track) => track.uri)).toEqual(
+    const uris = results.flat().map((track) => track.uri)
+    expect(uris).toEqual(
       expect.arrayContaining([
         "spotify:track:one",
         "spotify:track:two",
@@ -148,8 +141,32 @@ describe("profile source fallbacks", () => {
         "spotify:track:four",
       ])
     )
-    expect(result.map((track) => track.uri)).not.toContain("spotify:track:hanging")
+    expect(uris).not.toContain("spotify:track:hanging")
     expect(peak).toBeLessThanOrEqual(3)
+  })
+
+  it("fetchProfilePool excludes recently-played tracks and playlist-sampled tracks", async () => {
+    const calls: string[] = []
+    const get = vi.fn(async (url: string) => {
+      calls.push(url)
+      if (url.includes("/me/tracks")) {
+        return {
+          items: [{ track: { uri: "spotify:track:liked", popularity: 30, is_playable: true } }],
+          next: null,
+        }
+      }
+      if (url.includes("recently-played")) {
+        return { items: [{ track: { uri: "spotify:track:recent", is_playable: true } }] }
+      }
+      return {}
+    })
+    vi.stubGlobal("Spicetify", { CosmosAsync: { get } })
+
+    const pool = await fetchProfilePool(seed)
+
+    expect(pool.map((c) => c.uri)).toContain("spotify:track:liked")
+    expect(pool.map((c) => c.uri)).not.toContain("spotify:track:recent")
+    expect(calls.some((url) => url.includes("recently-played"))).toBe(false)
   })
 
   it("returns completed pages when a later fetchAllPlaylistTracks page hangs", async () => {

@@ -142,11 +142,6 @@ const fetchLikedTracks = async (): Promise<TrackCandidate[]> => {
   }
 }
 
-type PlaylistEntry = {
-  uri: string
-  name: string
-}
-
 export const fetchRecentlyPlayedTracks = async (): Promise<TrackCandidate[]> => {
   try {
     const response = await runWithTimeout(
@@ -174,31 +169,10 @@ export const fetchRecentlyPlayedTracks = async (): Promise<TrackCandidate[]> => 
   }
 }
 
-type RootlistNode = { type?: string; uri?: string; name?: string; items?: RootlistNode[] }
 type PlaylistContents = {
   items?: Array<{ uri: string; isPlayable?: boolean; metadata?: Record<string, string> }>
 }
 type TopTracksResponse = { items?: Array<{ uri?: string }> }
-
-const fetchPlaylistEntries = async (): Promise<PlaylistEntry[]> => {
-  const root = await runWithTimeout<{ items?: RootlistNode[] }>(
-    () => Spicetify.Platform.RootlistAPI.getContents(),
-    PROFILE_SOURCE_TIMEOUT_MS
-  )
-  const playlists: PlaylistEntry[] = []
-
-  const walk = (items: RootlistNode[]) => {
-    for (const item of items) {
-      if (item.type === "playlist" && item.uri) {
-        playlists.push({ uri: item.uri, name: item.name ?? item.uri })
-      }
-      if (item.items) walk(item.items)
-    }
-  }
-
-  walk(root.items ?? [])
-  return playlists
-}
 
 const fetchPlaylistTracks = async (playlistUri: string): Promise<TrackCandidate[]> => {
   const playlistId = getUriId(playlistUri)
@@ -300,46 +274,18 @@ export const fetchTopTracks = async (): Promise<string[]> => {
   return [...new Set(topTracks)]
 }
 
-const scorePlaylistName = (name: string, seed: SeedMetadata): number => {
-  const lower = name.toLowerCase()
-  let score = 0
-  if (seed.artistName && lower.includes(seed.artistName.toLowerCase())) score += 2
-  for (const genre of seed.genres) {
-    if (lower.includes(genre.toLowerCase())) score += 1
-  }
-  return score
-}
-
 export const fetchProfilePool = async (seed: SeedMetadata): Promise<TrackCandidate[]> => {
-  const [likedResult, playlistResult, recentResult] = await Promise.allSettled([
-    fetchLikedTracks(),
-    fetchPlaylistEntries(),
-    fetchRecentlyPlayedTracks(),
-  ])
+  // Recently-played is deliberately absent: a source of "what you just
+  // heard" can only produce replays by construction. Playlist tracks are
+  // excluded from the queue by the playlist-membership rule, so sampling
+  // them here would be wasted fetches.
+  const [likedResult] = await Promise.allSettled([fetchLikedTracks()])
 
   const liked = likedResult.status === "fulfilled" ? likedResult.value : []
-  const playlistEntries = playlistResult.status === "fulfilled" ? playlistResult.value : []
-  const recent = recentResult.status === "fulfilled" ? recentResult.value : []
-
-  const sampledPlaylists = playlistEntries
-    .map((entry) => ({ uri: entry.uri, score: scorePlaylistName(entry.name, seed) }))
-    .sort((a, b) => b.score - a.score)
-    .slice(0, 8)
-    .map((entry) => entry.uri)
-
-  const playlistResults = await Promise.allSettled(
-    sampledPlaylists.map((uri) => fetchPlaylistTracks(uri))
-  )
-
-  const playlistTracks: TrackCandidate[] = []
-  for (const result of playlistResults) {
-    if (result.status === "fulfilled") playlistTracks.push(...result.value)
-  }
 
   const shuffledLiked = sortByObscurity(liked).slice(0, 120)
-  const shuffledPlaylist = sortByObscurity(playlistTracks).slice(0, 120)
 
-  return mergeCandidatesWithProvenance([...shuffledLiked, ...shuffledPlaylist, ...recent]).filter(
+  return mergeCandidatesWithProvenance(shuffledLiked).filter(
     (candidate) => candidate.uri !== seed.uri
   )
 }
