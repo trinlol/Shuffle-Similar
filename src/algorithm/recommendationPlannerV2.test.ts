@@ -439,3 +439,66 @@ describe("production Similar Mix v2 integration", () => {
     expect(diagnostics?.slate.profileCount).toBeLessThanOrEqual(3)
   })
 })
+
+describe("seed-relevance gate", () => {
+  const gateSettings: SmartConfig = { ...settings }
+
+  it("drops candidates whose context affinity is below the 0.15 floor", () => {
+    // Without reference tracks the planner's context affinity is the
+    // era-window fallback: exp(-|releaseYear - seed.releaseYear| / eraWindow).
+    // seed.releaseYear = 2022, eraWindow = 3 → 2022 stays (1.0), 2010 falls
+    // to exp(-4) ≈ 0.018, well below the 0.15 floor.
+    const near = { ...familyPool("similar", 1)[0], uri: "spotify:track:near", releaseYear: 2022 }
+    const far = {
+      ...familyPool("similar", 1)[0],
+      uri: "spotify:track:far",
+      artistUri: "spotify:artist:far",
+      releaseYear: 2010,
+    }
+    const batch = buildTrackBatch(seed, 0, [], [near, far], [], gateSettings, 2)
+    expect(batch.map((track) => track.uri)).toContain("spotify:track:near")
+    expect(batch.map((track) => track.uri)).not.toContain("spotify:track:far")
+  })
+
+  it("relaxes the floor to 0.08 when the gate would remove more than 60% of the pool", () => {
+    const near = {
+      ...familyPool("similar", 1)[0],
+      uri: "spotify:track:only-near",
+      releaseYear: 2022,
+    }
+    // releaseYear 2016 → affinity exp(-2) ≈ 0.135: below the strict 0.15 floor
+    // but above the relaxed 0.08 floor, so relaxed candidates can return.
+    const farPool = Array.from({ length: 9 }, (_, index) => ({
+      ...familyPool("similar", 1)[0],
+      uri: `spotify:track:far-${index}`,
+      artistUri: `spotify:artist:far-${index}`,
+      albumUri: `spotify:album:far-${index}`,
+      releaseYear: 2016,
+    }))
+    const batch = buildTrackBatch(seed, 0, [], [near, ...farPool], [], gateSettings, 5)
+    // 9/10 would be gated out (>60%) → floor relaxes, far tracks can return
+    expect(batch.length).toBeGreaterThan(1)
+    expect(
+      getRecommendationDiagnostics(batch)?.planReasons["relax:relevance-gate"]
+    ).toBeGreaterThan(0)
+  })
+
+  it("does not gate when no seed acoustic data exists", () => {
+    const unknownSeed: SeedMetadata = {
+      ...seed,
+      tempo: undefined,
+      energy: undefined,
+      valence: undefined,
+      releaseYear: undefined,
+    }
+    const farPool = Array.from({ length: 6 }, (_, index) => ({
+      ...familyPool("similar", 1)[0],
+      uri: `spotify:track:far-${index}`,
+      artistUri: `spotify:artist:far-${index}`,
+      albumUri: `spotify:album:far-${index}`,
+      releaseYear: 1990 + index,
+    }))
+    const batch = buildTrackBatch(unknownSeed, 0, [], farPool, [], gateSettings, 4)
+    expect(batch).toHaveLength(4)
+  })
+})

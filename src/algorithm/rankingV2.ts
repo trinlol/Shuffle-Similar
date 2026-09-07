@@ -99,6 +99,7 @@ export type PlanReasonCode =
   | "diversity:mmr"
   | "diversity:artist-floor"
   | "discovery:floor"
+  | "relax:relevance-gate"
   | "transition:acoustic-paced"
   | "relax:acoustic-transition"
   | "relax:album-spacing"

@@ -332,6 +332,26 @@ export const planRecommendationBatchV2 = (
       contextAffinity(candidate, options.seed, references, options.settings.eraWindow),
     ])
   )
+
+  // Seed-relevance gate: candidates far below the seed's sound are removed
+  // before ranking. Relaxes to 0.08 if the strict floor would remove >60%.
+  const RELEVANCE_FLOOR = 0.15
+  const RELEVANCE_FLOOR_RELAXED = 0.08
+  const scoredContexts = [...contexts.values()].filter((v): v is number => v != null)
+  const belowFloor = scoredContexts.filter((v) => v < RELEVANCE_FLOOR).length
+  const relaxGate = scoredContexts.length > 0 && belowFloor / scoredContexts.length > 0.6
+  const relevanceFloor = relaxGate ? RELEVANCE_FLOOR_RELAXED : RELEVANCE_FLOOR
+  let relevanceGateRelaxed = false
+  if (scoredContexts.length > 0) {
+    for (const [uri, affinity] of contexts) {
+      if (affinity == null) continue // unknown metadata is neutral, not gated
+      if (affinity < relevanceFloor) {
+        aggregates.delete(uri)
+      }
+    }
+    relevanceGateRelaxed = relaxGate
+  }
+
   if (references.length > 0) {
     sourceWeights["playlist-context"] = 0.9
     addRankedProvenance(
@@ -436,6 +456,7 @@ export const planRecommendationBatchV2 = (
   const planReasons: Record<string, number> = {}
   for (const candidate of ranked) incrementReasons(candidate.reasonCodes, rankReasons)
   for (const item of plan.items) incrementReasons(item.reasonCodes, planReasons)
+  if (relevanceGateRelaxed) planReasons["relax:relevance-gate"] = Math.max(1, plan.items.length)
   const completeMetadata = tracks.filter(
     (track) => track.trackName && (track.artistUri || track.artistName) && track.albumUri
   ).length
