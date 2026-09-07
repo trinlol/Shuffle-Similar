@@ -191,7 +191,9 @@ export const sessionManager = {
   mergeRecentlyPlayedIntoHistory: async (): Promise<void> => {
     try {
       const recent = await fetchRecentlyPlayedTracksWithTimestamps()
-      for (const entry of recent) {
+      // Spotify returns newest-first, but the last append wins, so walk
+      // oldest-first to keep the newest timestamp for repeated tracks.
+      for (const entry of [...recent].reverse()) {
         appendPlayHistory(entry.uri, 400, playHistoryStorageKey, entry.playedAt)
       }
     } catch {

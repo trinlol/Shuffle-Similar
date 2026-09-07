@@ -332,6 +332,10 @@ const buildPlayableBatch = async (
 
   if (batch.length === 0 && !forceRefreshPools) {
     ;({ similar, profile, settings } = await ensurePools(seed, true))
+    // Refetched pools are raw: the choke point must re-apply or the fallback
+    // would reintroduce recently-heard, playlist-member, and vocal tracks.
+    similar = filterEligibleCandidates(similar, eligibilityContext)
+    profile = filterEligibleCandidates(profile, eligibilityContext)
     batch = build(excludeUris)
   }
 
@@ -483,10 +487,14 @@ const prepareMix = async (seed: SeedMetadata, contextUri?: string | null): Promi
     const playlistTracks = await enrichPlaylistTracks(rawTracks)
     if (playlistTracks.length === 0)
       throw new Error("No playable tracks were found in this selection")
-    const [topTracks, similarPool] = await Promise.all([
+    const [topTracks, similarPoolRaw] = await Promise.all([
       isAlbum ? Promise.resolve([]) : fetchTopTracks(),
       fetchPlaylistSimilarPool(playlistTracks, settings, 5),
     ])
+    // Same choke point as refills: the initial mix must not queue
+    // recently-heard, playlist-member, or vocal tracks either.
+    const eligibilityContext = buildEligibilityContext(seed)
+    const similarPool = filterEligibleCandidates(similarPoolRaw, eligibilityContext)
     const selected = buildPlaylistBatch(
       playlistTracks,
       similarPool,
@@ -506,10 +514,13 @@ const prepareMix = async (seed: SeedMetadata, contextUri?: string | null): Promi
       selected,
     }
   } else if (contextUri && isArtistContext(contextUri)) {
-    const [artistTracks, similarPool] = await Promise.all([
-      fetchArtistDiscographyTracks(contextUri),
+    const [similarPoolRaw, artistPoolRaw] = await Promise.all([
       fetchSimilarPool(seed, settings),
+      fetchArtistDiscographyTracks(contextUri),
     ])
+    const eligibilityContext = buildEligibilityContext(seed)
+    const similarPool = filterEligibleCandidates(similarPoolRaw, eligibilityContext)
+    const artistTracks = filterEligibleCandidates(artistPoolRaw, eligibilityContext)
     if (artistTracks.length === 0 && similarPool.length === 0) {
       throw new Error("No playable matches were found for this artist")
     }
@@ -531,10 +542,13 @@ const prepareMix = async (seed: SeedMetadata, contextUri?: string | null): Promi
       selected,
     }
   } else {
-    const [similarPool, profilePool] = await Promise.all([
+    const [similarPoolRaw, profilePoolRaw] = await Promise.all([
       fetchSimilarPool(seed, settings),
       withForegroundDeadline(fetchProfilePool(seed), []),
     ])
+    const eligibilityContext = buildEligibilityContext(seed)
+    const similarPool = filterEligibleCandidates(similarPoolRaw, eligibilityContext)
+    const profilePool = filterEligibleCandidates(profilePoolRaw, eligibilityContext)
     if (similarPool.length === 0 && profilePool.length === 0) {
       throw new Error("No playable matches were found for this track")
     }
@@ -594,7 +608,11 @@ export const startShuffleSimilar = async (
 ) => {
   if (!options.buildOnly) assertQueueCompatibility()
   await sessionManager.initializeTasteIdentity()
-  if (playlistMembership.size === 0) void refreshPlaylistMembership()
+  if (playlistMembership.size === 0) {
+    // Await the first build so the initial mix is already gated; refills
+    // later trigger background refreshes.
+    await refreshPlaylistMembership()
+  }
   await sessionManager.mergeRecentlyPlayedIntoHistory()
   const generation = options.buildOnly ? null : liveMixCoordinator.begin()
   const seed = await fetchSeedMetadata(seedUri)

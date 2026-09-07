@@ -6,7 +6,6 @@ import {
   INSTRUMENTAL_PATTERNS,
   looksInstrumental,
   SEED_INSTRUMENTALNESS_THRESHOLD,
-  VOCAL_INDICATOR_PATTERNS,
 } from "../utils/instrumental"
 import { getMarket } from "../utils/playability"
 import { getUriId } from "../utils/uri"
