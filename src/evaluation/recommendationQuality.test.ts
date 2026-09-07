@@ -1,5 +1,6 @@
 import { beforeAll, describe, expect, it } from "vitest"
 import {
+  applyRecentPlayBlackout,
   computeHistoryWeights,
   dedupeCandidates,
   excludeArtist,
@@ -18,7 +19,7 @@ import {
 } from "../algorithm/rankingV2"
 import type { SeedMetadata, TrackCandidate } from "../session/types"
 import { SourcePipeline } from "../sources/sourcePipeline"
-import { getSmartConfig } from "../storage/settings"
+import { getSmartConfig, type PlayHistoryEntry } from "../storage/settings"
 
 beforeAll(() => {
   ;(globalThis as unknown as { Spicetify: unknown }).Spicetify = {
@@ -449,5 +450,45 @@ describe("Better Shuffle 2.0 independent recommendation gate", () => {
 
     expect(output).toContain("spotify:track:intro-one")
     expect(output).toContain("spotify:track:intro-two")
+  })
+})
+
+describe("seed-anchored mix quality", () => {
+  it("keeps steady-state blends majority similar-family at position 20+", () => {
+    const ranked = rankCandidatesV2(fixture(0), {
+      componentWeights: {
+        fusion: 0.2,
+        context: 0.2,
+        taste: 0.12,
+        acoustic: 0.1,
+        novelty: 0.13,
+        feedback: 0.25,
+      },
+    })
+    const plan = planSlateV2(ranked, {
+      count: 20,
+      absoluteStartPosition: 20,
+      blendPhases: [
+        { maxPosition: 4, similar: 1, profile: 0 },
+        { maxPosition: 9, similar: 0.85, profile: 0.15 },
+        { maxPosition: 19, similar: 0.75, profile: 0.25 },
+        { maxPosition: Number.POSITIVE_INFINITY, similar: 0.7, profile: 0.3 },
+      ],
+    })
+    const similarFamily = plan.items.filter((item) => item.dominantFamily === "similar").length
+    expect(similarFamily / plan.items.length).toBeGreaterThanOrEqual(0.6)
+  })
+
+  it("blackout filter never returns recently played tracks when the pool is healthy", () => {
+    const now = Date.UTC(2026, 8, 7)
+    const candidates = Array.from({ length: 30 }, (_, i) => ({ uri: `spotify:track:c-${i}` }))
+    const history: PlayHistoryEntry[] = [
+      { uri: "spotify:track:c-0", playedAt: now - 1 * 24 * 60 * 60 * 1_000 },
+      { uri: "spotify:track:c-1", playedAt: now - 2 * 24 * 60 * 60 * 1_000 },
+    ]
+    const result = applyRecentPlayBlackout(candidates, history, now)
+    expect(result.map((t) => t.uri)).not.toContain("spotify:track:c-0")
+    expect(result.map((t) => t.uri)).not.toContain("spotify:track:c-1")
+    expect(result).toHaveLength(28)
   })
 })

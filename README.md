@@ -5,7 +5,8 @@ Shuffle Similar builds a coherent **Similar Mix** around the track, album, artis
 ## What 2.1 does
 
 - Fuses ranked candidates from radio, inspired-by, search, related-artist, era, playlist, and library sources instead of trusting one endpoint
-- Plans the queue as a complete slate: canonical duplicate removal, artist and album spacing, source coverage, progressive library blending, and acoustic transition pacing
+- Plans the queue as a complete slate: canonical duplicate removal, artist and album spacing, source coverage, seed-anchored blending (70% seed-similar steady state), and acoustic transition pacing
+- Excludes tracks heard in the last 14 days, tracks already in your playlists, and — for instrumental seeds — any track with vocals
 - Learns from clear playback outcomes such as completion, substantial listening, and genuine early skips; pauses, seeks, errors, and leaving the mix do not poison the profile
 - Saves a bounded, decaying taste profile locally in Spicetify storage; it is not uploaded as extension telemetry
 - Re-ranks what comes next immediately after an early skip
