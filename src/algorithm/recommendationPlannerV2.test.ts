@@ -483,6 +483,29 @@ describe("seed-relevance gate", () => {
     ).toBeGreaterThan(0)
   })
 
+  it("does not relax at exactly 60% below the floor — strict floor holds", () => {
+    // 6/10 scored below 0.15 is exactly 0.6, not > 0.6, so the strict floor
+    // applies and the 2016 candidates (affinity ≈ 0.135 < 0.15) stay dropped.
+    const nearPool = Array.from({ length: 4 }, (_, index) => ({
+      ...familyPool("similar", 1)[0],
+      uri: `spotify:track:near-${index}`,
+      artistUri: `spotify:artist:near-${index}`,
+      albumUri: `spotify:album:near-${index}`,
+      releaseYear: 2022,
+    }))
+    const farPool = Array.from({ length: 6 }, (_, index) => ({
+      ...familyPool("similar", 1)[0],
+      uri: `spotify:track:far-${index}`,
+      artistUri: `spotify:artist:far-${index}`,
+      albumUri: `spotify:album:far-${index}`,
+      releaseYear: 2016,
+    }))
+    const batch = buildTrackBatch(seed, 0, [], [...nearPool, ...farPool], [], gateSettings, 5)
+    const uris = batch.map((track) => track.uri)
+    expect(uris.some((uri) => uri.startsWith("spotify:track:far-"))).toBe(false)
+    expect(getRecommendationDiagnostics(batch)?.planReasons["relax:relevance-gate"]).toBeUndefined()
+  })
+
   it("does not gate when no seed acoustic data exists", () => {
     const unknownSeed: SeedMetadata = {
       ...seed,
