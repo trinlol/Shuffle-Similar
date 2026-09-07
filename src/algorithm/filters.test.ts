@@ -1,8 +1,14 @@
 import { beforeAll, describe, expect, it, vi } from "vitest"
 import { sessionManager } from "../session/SessionManager"
 import type { SeedMetadata, TrackCandidate } from "../session/types"
-import { getSmartConfig } from "../storage/settings"
-import { feedbackWeight, normalizeTempo, playlistAffinityWeight } from "./filters"
+import { getSmartConfig, type PlayHistoryEntry } from "../storage/settings"
+import {
+  applyRecentPlayBlackout,
+  feedbackWeight,
+  normalizeTempo,
+  playlistAffinityWeight,
+  recentPlayPenalty,
+} from "./filters"
 import { buildPlaylistBatch, buildTrackBatch, getBlendWeights } from "./progressiveBlend"
 
 beforeAll(() => {
@@ -163,5 +169,55 @@ describe("automatic recommendation scoring", () => {
     expect(result.slice(0, 4).every((track) => track.uri.includes("similar-"))).toBe(true)
     expect(result.slice(4).some((track) => track.uri.includes("profile-"))).toBe(true)
     vi.restoreAllMocks()
+  })
+})
+
+describe("recent-play blackout", () => {
+  const now = Date.UTC(2026, 8, 7)
+  const DAY = 24 * 60 * 60 * 1_000
+
+  it("hard-excludes tracks played within 14 days", () => {
+    const history: PlayHistoryEntry[] = [
+      { uri: "spotify:track:fresh", playedAt: now - 3 * DAY },
+      { uri: "spotify:track:edge", playedAt: now - 14 * DAY + 1 },
+    ]
+    // Fillers keep the pool above the 15-survivor relaxation threshold so
+    // the blackout actually applies instead of relaxing.
+    const fillers = Array.from({ length: 14 }, (_, i) => ({ uri: `spotify:track:filler-${i}` }))
+    const result = applyRecentPlayBlackout(
+      [
+        { uri: "spotify:track:fresh" },
+        { uri: "spotify:track:edge" },
+        { uri: "spotify:track:never" },
+        ...fillers,
+      ],
+      history,
+      now
+    )
+    const uris = result.map((t) => t.uri)
+    expect(uris).not.toContain("spotify:track:fresh")
+    expect(uris).not.toContain("spotify:track:edge")
+    expect(uris).toContain("spotify:track:never")
+    expect(result).toHaveLength(15)
+  })
+
+  it("relaxes to penalty-only when fewer than 15 candidates survive", () => {
+    const history: PlayHistoryEntry[] = Array.from({ length: 20 }, (_, i) => ({
+      uri: `spotify:track:recent-${i}`,
+      playedAt: now - i * DAY,
+    }))
+    const candidates = history.map(({ uri }) => ({ uri }))
+    const result = applyRecentPlayBlackout(candidates, history, now)
+    expect(result).toHaveLength(20)
+  })
+
+  it("penalty is 0.35 at 14 days and decays linearly to 0 at 45 days", () => {
+    expect(recentPlayPenalty(now - 14 * DAY, now)).toBeCloseTo(0.35)
+    expect(recentPlayPenalty(now - 45 * DAY, now)).toBeCloseTo(0)
+    expect(recentPlayPenalty(now - 100 * DAY, now)).toBe(0)
+  })
+
+  it("never-played tracks get no penalty", () => {
+    expect(recentPlayPenalty(0, now)).toBe(0)
   })
 })

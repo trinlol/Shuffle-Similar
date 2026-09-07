@@ -1,6 +1,6 @@
 import { scoreTasteAffinity, type TasteProfileState } from "../profile/tasteProfile"
 import type { AcousticProfile, SkipFeedback, TrackCandidate } from "../session/types"
-import { loadPlayHistoryUris } from "../storage/settings"
+import { loadPlayHistoryUris, type PlayHistoryEntry } from "../storage/settings"
 import { pickWeightedRandom, popularityWeight } from "./shuffle"
 
 export const dedupeCandidates = (candidates: TrackCandidate[]): TrackCandidate[] => {
@@ -302,4 +302,39 @@ export const pickFromPool = (
   })
 
   return pickWeightedRandom(pickPool, weights)
+}
+
+export const RECENT_PLAY_BLACKOUT_MS = 14 * 24 * 60 * 60 * 1_000
+const RECENT_PLAY_PENALTY_MS = 45 * 24 * 60 * 60 * 1_000
+const RECENT_PLAY_PENALTY_MAX = 0.35
+const BLACKOUT_RELAX_MIN_SURVIVORS = 15
+
+/** 0..0.35 penalty for plays between 14 and 45 days old; 0 outside that band. */
+export const recentPlayPenalty = (playedAt: number, now: number): number => {
+  if (playedAt <= 0) return 0
+  const age = now - playedAt
+  if (age <= RECENT_PLAY_BLACKOUT_MS) return RECENT_PLAY_PENALTY_MAX
+  if (age >= RECENT_PLAY_PENALTY_MS) return 0
+  const span = RECENT_PLAY_PENALTY_MS - RECENT_PLAY_BLACKOUT_MS
+  return RECENT_PLAY_PENALTY_MAX * (1 - (age - RECENT_PLAY_BLACKOUT_MS) / span)
+}
+
+/**
+ * Hard-excludes tracks played within the 14-day blackout window. If that
+ * would leave fewer than 15 survivors, returns the input unchanged — the
+ * engine layer applies penalty-only scoring for the oldest plays instead.
+ */
+export const applyRecentPlayBlackout = (
+  candidates: TrackCandidate[],
+  history: readonly PlayHistoryEntry[],
+  now: number
+): TrackCandidate[] => {
+  const blackedOut = new Set(
+    history
+      .filter((entry) => entry.playedAt > 0 && now - entry.playedAt <= RECENT_PLAY_BLACKOUT_MS)
+      .map((entry) => entry.uri)
+  )
+  if (blackedOut.size === 0) return candidates
+  const survivors = candidates.filter((candidate) => !blackedOut.has(candidate.uri))
+  return survivors.length >= BLACKOUT_RELAX_MIN_SURVIVORS ? survivors : candidates
 }
