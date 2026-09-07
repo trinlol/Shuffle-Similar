@@ -36,9 +36,9 @@ const settings: SmartConfig = {
   matchValence: true,
   blendPhases: [
     { maxPosition: 4, similarWeight: 1, profileWeight: 0 },
-    { maxPosition: 9, similarWeight: 0.7, profileWeight: 0.3 },
-    { maxPosition: 19, similarWeight: 0.4, profileWeight: 0.6 },
-    { maxPosition: Number.POSITIVE_INFINITY, similarWeight: 0.2, profileWeight: 0.8 },
+    { maxPosition: 9, similarWeight: 0.85, profileWeight: 0.15 },
+    { maxPosition: 19, similarWeight: 0.75, profileWeight: 0.25 },
+    { maxPosition: Number.POSITIVE_INFINITY, similarWeight: 0.7, profileWeight: 0.3 },
   ],
 }
 
@@ -436,6 +436,6 @@ describe("production Similar Mix v2 integration", () => {
 
     expect(batch).toHaveLength(10)
     expect(diagnostics?.slate.discoveryEligibleCount).toBeGreaterThanOrEqual(4)
-    expect(diagnostics?.slate.profileCount).toBeLessThanOrEqual(6)
+    expect(diagnostics?.slate.profileCount).toBeLessThanOrEqual(3)
   })
 })

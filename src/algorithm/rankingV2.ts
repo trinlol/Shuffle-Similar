@@ -160,9 +160,9 @@ const DEFAULT_COMPONENT_WEIGHTS: Record<ScoreComponent, number> = {
 
 const DEFAULT_BLEND_PHASES: ProgressiveBlendPhase[] = [
   { maxPosition: 4, similar: 1, profile: 0 },
-  { maxPosition: 9, similar: 0.7, profile: 0.3 },
-  { maxPosition: 19, similar: 0.4, profile: 0.6 },
-  { maxPosition: Number.POSITIVE_INFINITY, similar: 0.2, profile: 0.8 },
+  { maxPosition: 9, similar: 0.85, profile: 0.15 },
+  { maxPosition: 19, similar: 0.75, profile: 0.25 },
+  { maxPosition: Number.POSITIVE_INFINITY, similar: 0.7, profile: 0.3 },
 ]
 
 const finitePositive = (value: number | undefined, fallback: number): number =>

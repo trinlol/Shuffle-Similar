@@ -198,7 +198,7 @@ describe("planSlateV2", () => {
       "similar",
     ])
     expect(plan.items.slice(5).some((item) => item.dominantFamily === "profile")).toBe(true)
-    expect(plan.items[10].blendWeights).toEqual({ similar: 0.4, profile: 0.6 })
+    expect(plan.items[10].blendWeights).toEqual({ similar: 0.75, profile: 0.25 })
   })
 
   it("replays exactly for one seed while allowing another seed to explore", () => {
