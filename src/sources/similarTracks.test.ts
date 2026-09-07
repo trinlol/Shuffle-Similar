@@ -4,6 +4,7 @@ import { getSmartConfig } from "../storage/settings"
 import { getSourceProvenance } from "./provenance"
 import {
   enrichPlaylistTracks,
+  fetchPlaylistRecommendations,
   fetchPlaylistSimilarPool,
   fetchSimilarPool,
   filterInstrumentalsAndSoundtracksPublic,
@@ -386,5 +387,131 @@ describe("instrumental-seed rule", () => {
     const scoreSeed: SeedMetadata = { ...seed, instrumentalness: 0.95 }
     await fetchSimilarPool(scoreSeed, getSmartConfig(scoreSeed))
     expect(urls.some((url) => url.includes("min_instrumentalness=0.5"))).toBe(true)
+  })
+
+  it("veto: vocal-indicator album names are rejected by the heuristic", () => {
+    const scoreSeed: SeedMetadata = {
+      ...seed,
+      albumName: "Interstellar (Original Motion Picture Soundtrack)",
+      instrumentalness: 0.95,
+    }
+    const candidates: TrackCandidate[] = [
+      // "score" matches, but "hits" + vocal framing must veto it
+      { uri: "spotify:track:high-score", albumName: "High Score Vocal Hits" },
+      // "piano" matches, but "sing"/"sung" framing must veto it
+      { uri: "spotify:track:piano-man", albumName: "Piano Man Sing-Along" },
+      // instrumental term + no vocal indicators → kept
+      { uri: "spotify:track:clean-score", albumName: "Quiet Score" },
+    ]
+    const filtered = filterInstrumentalsAndSoundtracksPublic(candidates, scoreSeed)
+    expect(filtered.map((c) => c.uri)).toEqual(["spotify:track:clean-score"])
+  })
+
+  it("applies the instrumental rule to playlist pools only on a seed majority", async () => {
+    const majorityInstrumental = async (instrumentalUris: Set<string>) => {
+      const playlist: TrackCandidate[] = Array.from({ length: 3 }, (_, index) => ({
+        uri: `spotify:track:pl-${index}`,
+        artistUri: `spotify:artist:pl-${index}`,
+        albumUri: `spotify:album:pl-${index}`,
+        trackName: `Playlist Track ${index}`,
+        artistName: `Playlist Artist ${index}`,
+        albumName: "Regular Album",
+        popularity: 40,
+        releaseYear: 2024,
+        instrumentalness: instrumentalUris.has(`spotify:track:pl-${index}`) ? 0.95 : 0.1,
+      }))
+      return fetchPlaylistSimilarPool(playlist, getSmartConfig(seed), 3)
+    }
+
+    // buildSeedMetadataFromCandidate re-fetches features for the playlist
+    // seeds themselves, so the features mock must follow the current scenario.
+    let instrumentalSeeds = new Set<string>()
+    const get = vi.fn(async (url: string) => {
+      if (url.includes("/v1/audio-features/")) {
+        const id = url.split("/").pop()
+        // Playlist seeds per scenario are instrumental; everything the
+        // discovery pool returns is vocal, so the majority case must filter
+        // all of it out of the playlist pool.
+        return { instrumentalness: instrumentalSeeds.has(`spotify:track:${id}`) ? 0.95 : 0.05 }
+      }
+      if (url.includes("/v1/recommendations")) {
+        const seedId = url.split("seed_tracks=")[1]?.split("&")[0] ?? "x"
+        return {
+          tracks: [0, 1].map((index) => webTrack(`rec-${seedId}-${index}`)),
+        }
+      }
+      if (url.includes("/related-artists")) return { artists: [] }
+      if (url.includes("/v1/search?")) return { tracks: { items: [] } }
+      if (url.includes("inspiredby-mix")) return { mediaItems: [] }
+      if (url.includes("/v1/artists/")) return { genres: ["indie pop"] }
+      if (url.includes("/v1/tracks/")) {
+        const id = url.split("/").pop()?.split("?")[0]
+        return webTrack(id ?? "")
+      }
+      throw new Error(`Unexpected URL: ${url}`)
+    })
+    vi.stubGlobal("Spicetify", {
+      Locale: { getLocale: () => "en_GB" },
+      URI: {
+        fromString: (uri: string) => ({ id: uri.split(":").pop() }),
+        radioURI: () => ({ toString: () => "spotify:station:seed" }),
+      },
+      CosmosAsync: { get },
+      Platform: { PlaylistAPI: { getContents: vi.fn().mockResolvedValue({ items: [] }) } },
+      GraphQL: {
+        Definitions: {
+          fetchTracksForRadioStation: { name: "radio" },
+          queryAlbumTracks: { name: "album" },
+        },
+        Request: vi.fn(async () => ({
+          data: { albumUnion: { tracksV2: { items: [] } } },
+        })),
+      },
+    })
+
+    // 2 of 3 seeds instrumental → majority → vocal candidates are filtered out.
+    instrumentalSeeds = new Set(["spotify:track:pl-0", "spotify:track:pl-1"])
+    const withMajority = await majorityInstrumental(instrumentalSeeds)
+    // The discovery pool returns only vocal candidates (0.05), so a majority
+    // instrumental seed set must filter them all out of the playlist pool.
+    expect(withMajority).toHaveLength(0)
+
+    // Scenario 1 cached the playlist seeds' audio features; a stale pl-1
+    // "instrumental" feature would leak into this scenario and flip the vote.
+    resetSpotifySourceState()
+
+    // 1 of 3 instrumental → no majority → vocal candidates survive.
+    instrumentalSeeds = new Set(["spotify:track:pl-0"])
+    const withoutMajority = await majorityInstrumental(instrumentalSeeds)
+    expect(withoutMajority.length).toBeGreaterThan(0)
+  })
+
+  it("aligns the playlist recommendations URL param with the seed majority", async () => {
+    const urls: string[] = []
+    const get = vi.fn(async (url: string) => {
+      if (url.includes("/v1/recommendations")) {
+        urls.push(url)
+        return { tracks: [] }
+      }
+      return {}
+    })
+    vi.stubGlobal("Spicetify", {
+      Locale: { getLocale: () => "en_GB" },
+      URI: { fromString: (uri: string) => ({ id: uri.split(":").pop() }) },
+      CosmosAsync: { get },
+    })
+
+    const makeSeeds = (instrumentalCount: number): TrackCandidate[] =>
+      Array.from({ length: 3 }, (_, index) => ({
+        uri: `spotify:track:seed-${index}`,
+        instrumentalness: index < instrumentalCount ? 0.95 : 0.1,
+      }))
+
+    await fetchPlaylistRecommendations(makeSeeds(2), getSmartConfig(seed), 10)
+    expect(urls.some((url) => url.includes("min_instrumentalness=0.5"))).toBe(true)
+
+    urls.length = 0
+    await fetchPlaylistRecommendations(makeSeeds(1), getSmartConfig(seed), 10)
+    expect(urls.some((url) => url.includes("min_instrumentalness=0.5"))).toBe(false)
   })
 })

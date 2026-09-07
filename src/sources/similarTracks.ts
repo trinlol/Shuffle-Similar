@@ -18,6 +18,10 @@ type CachedMetadata = Pick<
 >
 const SOURCE_TIMEOUT_MS = 6_000
 const MAX_ENRICHMENT_REQUESTS = 12
+// Instrumental seeds get a 5× enrichment budget: feature-unknown candidates must
+// be enriched (audio features + track metadata) before the genre/album heuristic
+// has any data to act on. Worst case per similar-pool fetch: 60 feature + 60
+// metadata requests at concurrency 3.
 const MAX_ENRICHMENT_REQUESTS_INSTRUMENTAL = 60
 const ENRICHMENT_CONCURRENCY = 3
 const featureCache = new BoundedCache<string, CachedFeatures>(512)
@@ -225,13 +229,25 @@ export const SEED_INSTRUMENTALNESS_THRESHOLD = 0.9
 export const CANDIDATE_INSTRUMENTALNESS_FLOOR = 0.5
 
 export const INSTRUMENTAL_GENRE_PATTERNS =
-  /(soundtrack|score|classical|orchestral|ambient|instrumental|piano|string quartet|film score|movie tunes)/i
+  /(soundtrack|\bscore\b|\bclassical\b|\borchestral\b|\bambient\b|\binstrumental\b|\bpiano\b|\bquartet\b|\bfilm score\b|\bmovie tunes\b)/i
+
+/** Vocal indicators veto the instrumental heuristic: an album or genre that names
+ * vocals/lyrics is a vocal release even when an instrumental term also matches
+ * (e.g. "High Score Hits", "Piano Man", "Classical Crossover Vocal"). */
+const VOCAL_INDICATOR_PATTERNS =
+  /\b(vocal|vocals|lyrics|sung|sing|sings|feat\.|greatest hits|live at)\b/i
 
 /** True when genres or album name suggest an instrumental track. */
 const looksInstrumental = (candidate: TrackCandidate): boolean => {
-  if (candidate.albumName && INSTRUMENTAL_GENRE_PATTERNS.test(candidate.albumName)) return true
-  if (candidate.genres?.some((genre) => INSTRUMENTAL_GENRE_PATTERNS.test(genre))) return true
-  return false
+  const albumName = candidate.albumName
+  const albumMatches =
+    albumName !== undefined &&
+    INSTRUMENTAL_GENRE_PATTERNS.test(albumName) &&
+    !VOCAL_INDICATOR_PATTERNS.test(albumName)
+  const genreMatches = candidate.genres?.some(
+    (genre) => INSTRUMENTAL_GENRE_PATTERNS.test(genre) && !VOCAL_INDICATOR_PATTERNS.test(genre)
+  )
+  return Boolean(albumMatches || genreMatches)
 }
 
 export const isSeedInstrumental = (seed: SeedMetadata): boolean =>
@@ -239,14 +255,14 @@ export const isSeedInstrumental = (seed: SeedMetadata): boolean =>
 
 /** Shared seed soundtrack classification (album name + genres), used by both the
  * production call sites and the test-visible wrapper so the logic cannot diverge. */
+const SEED_SOUNDTRACK_ALBUM_PATTERNS =
+  /(Soundtrack|Score|OST|Original Motion Picture|Original Soundtrack|Broadway|Musical)/i
+const SEED_SOUNDTRACK_GENRE_PATTERNS =
+  /(soundtrack|score|orchestral|movie tunes|show tunes|broadway|musical)/i
+
 const isSeedSoundtrackLike = (seed: SeedMetadata): boolean =>
-  (seed.albumName &&
-    /(Soundtrack|Score|OST|Original Motion Picture|Original Soundtrack|Broadway|Musical)/i.test(
-      seed.albumName
-    )) ||
-  seed.genres.some((genre) =>
-    /(soundtrack|score|orchestral|movie tunes|show tunes|broadway|musical)/i.test(genre)
-  )
+  (seed.albumName && SEED_SOUNDTRACK_ALBUM_PATTERNS.test(seed.albumName)) ||
+  seed.genres.some((genre) => SEED_SOUNDTRACK_GENRE_PATTERNS.test(genre))
 
 /** Test-visible wrapper around the internal vocal/soundtrack filter. */
 export const filterInstrumentalsAndSoundtracksPublic = (
@@ -289,10 +305,7 @@ const filterInstrumentalsAndSoundtracks = (
 
     // 2. Soundtrack Leakage Protection:
     if (!isSoundtrack && candidate.albumName) {
-      const isCandidateSoundtrack =
-        /(Soundtrack|Score|OST|Original Motion Picture|Original Soundtrack|Broadway|Musical)/i.test(
-          candidate.albumName
-        )
+      const isCandidateSoundtrack = SEED_SOUNDTRACK_ALBUM_PATTERNS.test(candidate.albumName)
 
       if (isCandidateSoundtrack) {
         // Exception: Disney/movie vocal pop songs (which have low instrumentalness < 0.2 and high popularity >= 60)
@@ -695,7 +708,10 @@ export const fetchPlaylistRecommendations = async (
   if (settings.deprioritizePopular) {
     url += `&max_popularity=70`
   }
-  if (seeds.some((s) => isSeedInstrumental(s as SeedMetadata))) {
+  // Align with the pool filter's majority vote: only request instrumental-only
+  // recommendations when half or more of the seeds are instrumental.
+  const instrumentalSeedCount = seeds.filter((s) => isSeedInstrumental(s as SeedMetadata)).length
+  if (instrumentalSeedCount >= Math.ceil(seeds.length / 2)) {
     url += `&min_instrumentalness=${CANDIDATE_INSTRUMENTALNESS_FLOOR}`
   }
 
