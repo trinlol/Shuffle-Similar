@@ -101,13 +101,14 @@ describe("automatic recommendation scoring", () => {
     expect(weight).toBeCloseTo(0.025)
   })
 
-  it("uses the expected progressive blend phases", () => {
+  it("uses the expected seed-anchored blend phases", () => {
     const settings = getSmartConfig(seed)
     expect(settings.initialQueueSize).toBe(50)
     expect(settings.deprioritizePopular).toBe(false)
     expect(getBlendWeights(4, settings)).toEqual({ similarWeight: 1, profileWeight: 0 })
-    expect(getBlendWeights(5, settings)).toEqual({ similarWeight: 0.7, profileWeight: 0.3 })
-    expect(getBlendWeights(20, settings)).toEqual({ similarWeight: 0.2, profileWeight: 0.8 })
+    expect(getBlendWeights(5, settings)).toEqual({ similarWeight: 0.85, profileWeight: 0.15 })
+    expect(getBlendWeights(10, settings)).toEqual({ similarWeight: 0.75, profileWeight: 0.25 })
+    expect(getBlendWeights(20, settings)).toEqual({ similarWeight: 0.7, profileWeight: 0.3 })
   })
 
   it("learns an early skip but not a substantially played track", () => {

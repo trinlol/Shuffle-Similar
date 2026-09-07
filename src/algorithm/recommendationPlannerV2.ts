@@ -383,11 +383,11 @@ export const planRecommendationBatchV2 = (
     seedProfile: acousticProfile(options.seed),
     componentWeights: {
       fusion: 0.2,
-      context: 0.12,
-      taste: 0.17,
-      acoustic: 0.08,
-      novelty: 0.08,
-      feedback: 0.35,
+      context: 0.2,
+      taste: 0.12,
+      acoustic: 0.1,
+      novelty: 0.13,
+      feedback: 0.25,
     },
     skipSignals: options.settings.skipFeedback?.map((skip) => ({
       artistUris: skip.artistUri ? [skip.artistUri] : undefined,

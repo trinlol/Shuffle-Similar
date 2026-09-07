@@ -56,9 +56,9 @@ export const getSmartConfig = (
     matchValence: true,
     blendPhases: [
       { maxPosition: 4, similarWeight: 1, profileWeight: 0 },
-      { maxPosition: 9, similarWeight: 0.7, profileWeight: 0.3 },
-      { maxPosition: 19, similarWeight: 0.4, profileWeight: 0.6 },
-      { maxPosition: Number.POSITIVE_INFINITY, similarWeight: 0.2, profileWeight: 0.8 },
+      { maxPosition: 9, similarWeight: 0.85, profileWeight: 0.15 },
+      { maxPosition: 19, similarWeight: 0.75, profileWeight: 0.25 },
+      { maxPosition: Number.POSITIVE_INFINITY, similarWeight: 0.7, profileWeight: 0.3 },
     ],
   }
 }
