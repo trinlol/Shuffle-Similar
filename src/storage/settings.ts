@@ -87,25 +87,58 @@ const migrateLegacyStorage = (): void => {
   }
 }
 
-export const loadPlayHistory = (storageKey = PLAY_HISTORY_STORAGE_KEY): string[] => {
-  migrateLegacyStorage()
+export type PlayHistoryEntry = {
+  uri: string
+  playedAt: number
+}
 
+const PLAY_HISTORY_MAX_ENTRIES = 400
+
+const decodePlayHistory = (raw: string | null): PlayHistoryEntry[] => {
+  if (!raw) return []
   try {
-    const raw = Spicetify.LocalStorage.get(storageKey)
-    if (!raw) return []
     const parsed = JSON.parse(raw)
-    return Array.isArray(parsed) ? parsed.filter((uri) => typeof uri === "string") : []
+    if (!Array.isArray(parsed)) return []
+    return parsed
+      .map((entry): PlayHistoryEntry | null => {
+        if (typeof entry === "string") return { uri: entry, playedAt: 0 }
+        if (
+          entry &&
+          typeof entry === "object" &&
+          typeof (entry as PlayHistoryEntry).uri === "string" &&
+          typeof (entry as PlayHistoryEntry).playedAt === "number" &&
+          Number.isFinite((entry as PlayHistoryEntry).playedAt)
+        ) {
+          return {
+            uri: (entry as PlayHistoryEntry).uri,
+            playedAt: (entry as PlayHistoryEntry).playedAt,
+          }
+        }
+        return null
+      })
+      .filter((entry): entry is PlayHistoryEntry => entry !== null)
   } catch {
     return []
   }
 }
 
+export const loadPlayHistory = (storageKey = PLAY_HISTORY_STORAGE_KEY): PlayHistoryEntry[] => {
+  migrateLegacyStorage()
+  return decodePlayHistory(Spicetify.LocalStorage.get(storageKey))
+}
+
+/** URI-only view for legacy consumers that only need membership/order. */
+export const loadPlayHistoryUris = (storageKey = PLAY_HISTORY_STORAGE_KEY): string[] =>
+  loadPlayHistory(storageKey).map((entry) => entry.uri)
+
 export const appendPlayHistory = (
   uri: string,
   maxWindow: number,
-  storageKey = PLAY_HISTORY_STORAGE_KEY
+  storageKey = PLAY_HISTORY_STORAGE_KEY,
+  playedAt = Date.now()
 ): void => {
-  const history = loadPlayHistory(storageKey).filter((entry) => entry !== uri)
-  history.unshift(uri)
-  Spicetify.LocalStorage.set(storageKey, JSON.stringify(history.slice(0, maxWindow)))
+  const history = loadPlayHistory(storageKey).filter((entry) => entry.uri !== uri)
+  history.unshift({ uri, playedAt })
+  const capped = history.slice(0, Math.max(1, Math.min(maxWindow, PLAY_HISTORY_MAX_ENTRIES)))
+  Spicetify.LocalStorage.set(storageKey, JSON.stringify(capped))
 }

@@ -217,10 +217,10 @@ describe("SessionManager v2 invariants", () => {
     expect(sessionManager.confirmPlayback(second.uri)).toBe(true)
 
     expect(JSON.parse(memory.get("shuffleSimilar:playHistory:account:account-a") ?? "[]")).toEqual([
-      first.uri,
+      { uri: first.uri, playedAt: expect.any(Number) },
     ])
     expect(JSON.parse(memory.get("shuffleSimilar:playHistory:account:account-b") ?? "[]")).toEqual([
-      second.uri,
+      { uri: second.uri, playedAt: expect.any(Number) },
     ])
   })
 })

@@ -10,7 +10,7 @@ import {
 import {
   appendPlayHistory,
   getSmartConfig,
-  loadPlayHistory,
+  loadPlayHistoryUris,
   PLAY_HISTORY_STORAGE_KEY,
 } from "../storage/settings"
 import type { SeedMetadata, SkipFeedback, TrackCandidate } from "./types"
@@ -184,7 +184,7 @@ export const sessionManager = {
   getSeed: () => state.seed,
   getPosition: () => state.position,
   getPlayedUris: () => [...state.playedUris],
-  getPlayHistory: () => loadPlayHistory(playHistoryStorageKey),
+  getPlayHistory: () => loadPlayHistoryUris(playHistoryStorageKey),
   getQueuedUris: () => [...state.queuedUris],
   getSimilarPool: () => state.similarPool,
   getProfilePool: () => state.profilePool,

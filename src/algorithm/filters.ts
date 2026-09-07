@@ -1,6 +1,6 @@
 import { scoreTasteAffinity, type TasteProfileState } from "../profile/tasteProfile"
 import type { AcousticProfile, SkipFeedback, TrackCandidate } from "../session/types"
-import { loadPlayHistory } from "../storage/settings"
+import { loadPlayHistoryUris } from "../storage/settings"
 import { pickWeightedRandom, popularityWeight } from "./shuffle"
 
 export const dedupeCandidates = (candidates: TrackCandidate[]): TrackCandidate[] => {
@@ -44,7 +44,7 @@ export const computeHistoryWeights = (
   sessionPlayed: string[],
   historyWindow: number
 ): Map<string, number> => {
-  const recentHistory = [...sessionPlayed, ...loadPlayHistory().slice(0, historyWindow)]
+  const recentHistory = [...sessionPlayed, ...loadPlayHistoryUris().slice(0, historyWindow)]
 
   // Build a position map — lower index = more recently played
   const positionMap = new Map<string, number>()
@@ -79,7 +79,7 @@ export const applyHistoryPenalty = (
   sessionPlayed: string[],
   historyWindow: number
 ): TrackCandidate[] => {
-  const history = new Set([...sessionPlayed, ...loadPlayHistory().slice(0, historyWindow)])
+  const history = new Set([...sessionPlayed, ...loadPlayHistoryUris().slice(0, historyWindow)])
   const fresh: TrackCandidate[] = []
   const stale: TrackCandidate[] = []
 
