@@ -34,7 +34,7 @@ function bootExtension() {
   // Lets the service layer suppress native shuffle without importing the DOM-bound UI.
   registerNativeShuffleSuppressor(enforceNativeShuffleOff)
 
-  const PLAYBAR_INIT_DELAY_MS = 4000
+  const PLAYBAR_INIT_DELAY_MS = 250
 
   let initialized = false
   let playbarInitialized = false
@@ -118,6 +118,7 @@ function bootExtension() {
       }
     })
 
+    initializePlaybarFeatures()
     setTimeout(initializePlaybarFeatures, PLAYBAR_INIT_DELAY_MS)
     setTimeout(() => {
       void recoverSimilarMixSession().then((recovered) => {
@@ -132,7 +133,13 @@ function bootExtension() {
   }
 
   const isSpicetifyReady = () =>
-    Boolean(Spicetify.Platform && Spicetify.Player && Spicetify.URI && Spicetify.ContextMenu?.Item)
+    Boolean(
+      Spicetify.Platform &&
+        Object.keys(Spicetify.Platform).length > 0 &&
+        typeof Spicetify.Player?.addEventListener === "function" &&
+        typeof Spicetify.URI?.fromString === "function" &&
+        Spicetify.ContextMenu?.Item
+    )
 
   const waitForSpicetify = () => {
     if (isSpicetifyReady()) {
@@ -146,12 +153,22 @@ function bootExtension() {
   const spicetifyEvents = (
     Spicetify as {
       Events?: {
-        platformLoaded?: { addListener?: (fn: () => void) => void }
-        webpackLoaded?: { addListener?: (fn: () => void) => void }
+        platformLoaded?: {
+          on?: (fn: () => void) => void
+          addListener?: (fn: () => void) => void
+        }
+        webpackLoaded?: {
+          on?: (fn: () => void) => void
+          addListener?: (fn: () => void) => void
+        }
       }
     }
   ).Events
+  spicetifyEvents?.platformLoaded?.on?.(waitForSpicetify)
   spicetifyEvents?.platformLoaded?.addListener?.(waitForSpicetify)
+  spicetifyEvents?.webpackLoaded?.on?.(() => {
+    tryRegisterContextMenu()
+  })
   spicetifyEvents?.webpackLoaded?.addListener?.(() => {
     tryRegisterContextMenu()
   })

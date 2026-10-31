@@ -35,6 +35,7 @@ export type RankableCandidate = {
     contextAffinity?: number
     tasteAffinity?: number
     novelty?: number
+    recencyPenalty?: number
   }
 }
 
@@ -90,6 +91,7 @@ export type RankReasonCode =
   | "rank:taste-match"
   | "rank:acoustic-match"
   | "rank:skip-penalized"
+  | "rank:history-penalized"
   | "rank:partial-metadata"
 
 export type PlanReasonCode =
@@ -525,13 +527,21 @@ export const evaluateSlateV2 = (
   }
 }
 
-const candidateSimilarity = (candidate: RankableCandidate, other: RankableCandidate): number => {
+const candidateSimilarity = (
+  candidate: RankableCandidate,
+  other: RankableCandidate,
+  includeAcousticSimilarity = true
+): number => {
   let similarity = 0
   if (overlaps(artistKeys(candidate), artistKeys(other))) similarity = Math.max(similarity, 0.85)
   if (candidate.albumUri && candidate.albumUri === other.albumUri)
     similarity = Math.max(similarity, 0.9)
-  const acousticDistance = acousticDistanceV2(candidate.acoustic, other.acoustic)
-  if (acousticDistance != null) similarity = Math.max(similarity, 1 - Math.min(1, acousticDistance))
+  if (includeAcousticSimilarity) {
+    const acousticDistance = acousticDistanceV2(candidate.acoustic, other.acoustic)
+    if (acousticDistance != null) {
+      similarity = Math.max(similarity, 1 - Math.min(1, acousticDistance))
+    }
+  }
   const sources = new Set(candidate.provenance.map((hit) => hit.source))
   const otherSources = new Set(other.provenance.map((hit) => hit.source))
   if (sources.size > 0 && otherSources.size > 0) {
@@ -642,14 +652,20 @@ export const rankCandidatesV2 = (
       if (values.feedback != null && values.feedback < 0.7) {
         reasonCodes.push("rank:skip-penalized")
       }
+      const recencyPenalty = Math.max(0, candidate.signals?.recencyPenalty ?? 0)
+      if (recencyPenalty > 0) {
+        reasonCodes.push("rank:history-penalized")
+      }
       if (!candidate.title || artistKeys(candidate).length === 0 || !candidate.albumUri) {
         reasonCodes.push("rank:partial-metadata")
       }
+      const baseScore = breakdown.availableWeight > 0 ? breakdown.total : 0.5
+      const finalScore = Math.max(0.01, baseScore - recencyPenalty)
       return {
         ...candidate,
         fusionScore,
         familyFusionScore,
-        score: breakdown.availableWeight > 0 ? breakdown.total : 0.5,
+        score: finalScore,
         breakdown,
         reasonCodes,
       }
@@ -765,20 +781,26 @@ export const planSlateV2 = (
     const usedBlendFallback = preferred.length === 0
     const pool = usedBlendFallback ? feasible : preferred
     const selectedCandidates = [...queueTail, ...items.map((item) => item.candidate)]
+    const previous = selectedCandidates[selectedCandidates.length - 1]
     const objectives = pool.map((candidate) => {
       const redundancy = selectedCandidates.length
-        ? Math.max(...selectedCandidates.map((other) => candidateSimilarity(candidate, other)))
+        ? Math.max(
+            ...selectedCandidates.map((other, idx) =>
+              candidateSimilarity(candidate, other, idx < selectedCandidates.length - 1)
+            )
+          )
         : 0
+      const stepDistance = acousticDistanceV2(previous?.acoustic, candidate.acoustic)
+      const transitionPenalty = stepDistance != null ? 0.08 * stepDistance : 0
       return {
         candidate,
-        objective: mmrLambda * candidate.score - (1 - mmrLambda) * redundancy,
+        objective: mmrLambda * candidate.score - (1 - mmrLambda) * redundancy - transitionPenalty,
       }
     })
     const bestScore = Math.max(...objectives.map((entry) => entry.objective))
-    const tied = objectives.filter((entry) => Math.abs(entry.objective - bestScore) < 1e-12)
+    const tied = objectives.filter((entry) => Math.abs(entry.objective - bestScore) < 1e-6)
     const picked = (tied[Math.floor(rng() * tied.length)] ?? objectives[0]).candidate
     const dominantFamily = dominantFamilyFor(picked)
-    const previous = selectedCandidates[selectedCandidates.length - 1]
     const acousticDistanceFromPrevious = acousticDistanceV2(previous?.acoustic, picked.acoustic)
     const reasonCodes: PlanReasonCode[] = [
       dominantFamily === "similar" ? "blend:similar" : "blend:profile",

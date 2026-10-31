@@ -87,6 +87,7 @@ const getSessionConfig = (seed?: SeedMetadata | null) => {
     tasteProfile: sessionManager.getTasteProfile(now),
     tasteProfileNow: now,
     tasteContextKey: sessionManager.getTasteContextKey(now),
+    playHistoryEntries: sessionManager.getPlayHistoryEntries(),
   }
 }
 
@@ -234,10 +235,10 @@ const buildArtistPlayableBatch = async (excludeUpcoming = true) => {
   // Artist discography is queued output in this mode, so both pools pass the
   // eligibility choke point with requireInstrumental honoring the seed.
   const eligibilityContext = buildEligibilityContext(seed)
-  const similarPool = filterEligibleCandidates(
-    await fetchSimilarPool(seed, settings),
-    eligibilityContext
-  )
+  const cachedSimilar = sessionManager.getSimilarPool()
+  const similarPoolRaw =
+    cachedSimilar.length > 0 ? cachedSimilar : await fetchSimilarPool(seed, settings)
+  const similarPool = filterEligibleCandidates(similarPoolRaw, eligibilityContext)
   const artistPool = filterEligibleCandidates(artistTracks, eligibilityContext)
   sessionManager.registerCandidates([...artistTracks, ...similarPool])
 
@@ -531,7 +532,10 @@ const prepareMix = async (seed: SeedMetadata, contextUri?: string | null): Promi
       similarPool,
       artistTracks,
       settings,
-      settings.initialQueueSize
+      settings.initialQueueSize,
+      [...sessionManager.getPlayHistory(), ...artistTracks.map((c) => c.uri)],
+      sessionManager.getRecentPositiveAnchors(),
+      sessionManager.getFamiliarityLedger().map((entry) => entry === "discovery")
     )
     prepared = {
       ...base,
@@ -559,7 +563,10 @@ const prepareMix = async (seed: SeedMetadata, contextUri?: string | null): Promi
       similarPool,
       profilePool,
       settings,
-      settings.initialQueueSize
+      settings.initialQueueSize,
+      [...sessionManager.getPlayHistory(), ...profilePool.map((c) => c.uri)],
+      sessionManager.getRecentPositiveAnchors(),
+      sessionManager.getFamiliarityLedger().map((entry) => entry === "discovery")
     )
     prepared = {
       ...base,

@@ -524,4 +524,153 @@ describe("seed-relevance gate", () => {
     const batch = buildTrackBatch(unknownSeed, 0, [], farPool, [], gateSettings, 4)
     expect(batch).toHaveLength(4)
   })
+
+  it("penalizes recently played tracks and deprioritizes them in the slate", () => {
+    const pool = familyPool("similar", 6)
+    const recentlyPlayedTrack = pool[0]
+    const now = Date.now()
+    const historySettings: SmartConfig = {
+      ...settings,
+      playHistoryEntries: [
+        { uri: recentlyPlayedTrack.uri, playedAt: now - 2 * 24 * 60 * 60 * 1_000 },
+      ],
+    }
+
+    const batch = buildTrackBatch(seed, 0, [], pool, [], historySettings, 1)
+    expect(batch[0].uri).not.toBe(recentlyPlayedTrack.uri)
+  })
+
+  it("penalizes re-releases and remasters of recently played tracks via canonical title matching", () => {
+    const originalTrack: TrackCandidate = {
+      uri: "spotify:track:original",
+      trackName: "Summer Echoes",
+      artistUri: "spotify:artist:band",
+      artistName: "The Band",
+      albumUri: "spotify:album:orig",
+      releaseYear: 2020,
+      popularity: 70,
+    }
+    const remasterTrack: TrackCandidate = {
+      uri: "spotify:track:remaster",
+      trackName: "Summer Echoes - 2024 Remaster",
+      artistUri: "spotify:artist:band",
+      artistName: "The Band",
+      albumUri: "spotify:album:reissue",
+      releaseYear: 2024,
+      popularity: 70,
+    }
+    const freshTrack: TrackCandidate = {
+      uri: "spotify:track:fresh",
+      trackName: "Winter Sunlight",
+      artistUri: "spotify:artist:other",
+      artistName: "Other Band",
+      albumUri: "spotify:album:other",
+      releaseYear: 2022,
+      popularity: 65,
+    }
+
+    const now = Date.now()
+    const historySettings: SmartConfig = {
+      ...settings,
+      playHistoryEntries: [{ uri: originalTrack.uri, playedAt: now - 1 * 24 * 60 * 60 * 1_000 }],
+    }
+
+    const batch = buildTrackBatch(
+      seed,
+      0,
+      [],
+      [remasterTrack, freshTrack],
+      [originalTrack],
+      historySettings,
+      1
+    )
+    expect(batch[0].uri).toBe(freshTrack.uri)
+  })
+
+  it("excludes remasters of tracks already played earlier in the session beyond the 5-track tail", () => {
+    const playedEarly: TrackCandidate = {
+      uri: "spotify:track:played-early",
+      trackName: "Neon Skyline",
+      artistUri: "spotify:artist:neon",
+      artistName: "Neon Club",
+      albumUri: "spotify:album:neon-1",
+      releaseYear: 2021,
+      popularity: 60,
+    }
+    const remasterOfPlayedEarly: TrackCandidate = {
+      uri: "spotify:track:played-early-remaster",
+      trackName: "Neon Skyline - 2025 Remaster",
+      artistUri: "spotify:artist:neon",
+      artistName: "Neon Club",
+      albumUri: "spotify:album:neon-deluxe",
+      releaseYear: 2025,
+      popularity: 60,
+    }
+    const freshCandidate: TrackCandidate = {
+      uri: "spotify:track:fresh-candidate",
+      trackName: "Starlight Drive",
+      artistUri: "spotify:artist:starlight",
+      artistName: "Starlight",
+      albumUri: "spotify:album:starlight",
+      releaseYear: 2022,
+      popularity: 60,
+    }
+    const tailUris = Array.from({ length: 6 }, (_, i) => `spotify:track:tail-${i}`)
+    const batch = buildTrackBatch(
+      seed,
+      7,
+      [playedEarly.uri, ...tailUris],
+      [remasterOfPlayedEarly, freshCandidate],
+      [playedEarly],
+      settings,
+      2
+    )
+    expect(batch.map((t) => t.uri)).toEqual([freshCandidate.uri])
+  })
+
+  it("scores candidate-specific genres in taste profile and reference release years in playlist mode", () => {
+    const now = 50_000
+    const tasteProfile: TasteProfileState = {
+      version: TASTE_PROFILE_SCHEMA_VERSION,
+      updatedAt: now,
+      signals: {
+        tracks: Array.from({ length: 4 }, (_, index) => ({
+          key: `spotify:track:hist-${index}`,
+          sentiment: 1 as const,
+          strength: 1,
+          occurredAt: now,
+        })),
+        artists: [],
+        genres: [
+          { key: "dream pop", sentiment: 1, strength: 1, occurredAt: now },
+          { key: "dream pop", sentiment: 1, strength: 1, occurredAt: now },
+          { key: "brostep", sentiment: -1, strength: 1, occurredAt: now },
+        ],
+        acousticPositive: [],
+        acousticNegative: [],
+      },
+    }
+    const dreamPopCandidate: TrackCandidate = {
+      ...familyPool("similar", 1)[0],
+      uri: "spotify:track:dream-pop",
+      artistUri: "spotify:artist:dream",
+      genres: ["dream pop"],
+    }
+    const brostepCandidate: TrackCandidate = {
+      ...dreamPopCandidate,
+      uri: "spotify:track:brostep",
+      artistUri: "spotify:artist:brostep",
+      genres: ["brostep"],
+    }
+    const batch = buildTrackBatch(
+      seed,
+      0,
+      [],
+      [brostepCandidate, dreamPopCandidate],
+      [],
+      { ...settings, tasteProfile, tasteProfileNow: now },
+      1
+    )
+    expect(batch[0].uri).toBe(dreamPopCandidate.uri)
+  })
 })

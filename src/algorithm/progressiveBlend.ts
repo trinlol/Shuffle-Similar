@@ -25,12 +25,18 @@ export const buildTrackBatch = (
   discoveryHistory: readonly boolean[] = []
 ): TrackCandidate[] => {
   const excludeEarlyArtist = settings.excludeSeedArtistEarly && position <= 4
+  const seedArtistMatches = profilePool.filter(
+    (candidate) =>
+      (seed.artistUri && candidate.artistUri === seed.artistUri) ||
+      (seed.artistName && candidate.artistName === seed.artistName)
+  ).length
   const profileIsSeedDiscography =
     profilePool.length > 0 &&
-    profilePool.every(
+    (profilePool.every(
       (candidate) =>
         candidate.artistUri === seed.artistUri || candidate.artistName === seed.artistName
-    )
+    ) ||
+      seedArtistMatches / profilePool.length >= 0.7)
 
   let similar = dedupeCandidates(filterPlayableCandidates(similarPool))
   let profile = dedupeCandidates(filterPlayableCandidates(profilePool))

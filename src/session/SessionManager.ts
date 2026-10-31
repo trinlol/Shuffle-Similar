@@ -230,7 +230,7 @@ export const sessionManager = {
     getTasteProfileStore().recordFeedback({
       sentiment,
       candidate,
-      genres: state.seed?.genres,
+      genres: candidate.genres?.length ? candidate.genres : state.seed?.genres,
       occurredAt: Date.now(),
       contextKey: sessionManager.getTasteContextKey(),
     })
@@ -414,6 +414,7 @@ export const sessionManager = {
             getTasteProfileStore().record({
               type: "completion",
               candidate,
+              genres: candidate.genres?.length ? candidate.genres : state.seed?.genres,
               occurredAt: observedAt,
               contextKey: sessionManager.getTasteContextKey(),
             })
@@ -454,7 +455,11 @@ export const sessionManager = {
               context: {
                 sessionId: String(state.revision),
                 source: state.playlistUri ? "playlist" : state.artistUri ? "artist" : "track",
-                genres: previousUri === state.seed?.uri ? state.seed.genres : undefined,
+                genres: previousCandidate.genres?.length
+                  ? previousCandidate.genres
+                  : previousUri === state.seed?.uri
+                    ? state.seed.genres
+                    : undefined,
               },
             }
           : null,

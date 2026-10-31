@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest"
 import {
+  isNativeShuffleLabel,
   playbarMutationsAffectControls,
   removeLegacyButtonsFromMutations,
   sanitizeClonedPlaybarButton,
@@ -51,5 +52,16 @@ describe("cloned playbar button sanitation", () => {
 
     expect(playbarMutationsAffectControls(records, { isConnected: true })).toBe(false)
     expect(playbarMutationsAffectControls(records, { isConnected: false })).toBe(true)
+  })
+
+  it("recognizes Spotify 1.3.x Smart Shuffle labels as native shuffle while excluding extension controls", () => {
+    expect(isNativeShuffleLabel("Enable shuffle")).toBe(true)
+    expect(isNativeShuffleLabel("Disable shuffle")).toBe(true)
+    expect(isNativeShuffleLabel("Enable Smart Shuffle")).toBe(true)
+    expect(isNativeShuffleLabel("Disable Smart Shuffle for Liked Songs")).toBe(true)
+    expect(isNativeShuffleLabel("Turn on Similar Mix")).toBe(false)
+    expect(isNativeShuffleLabel("Similar Shuffle")).toBe(false)
+    expect(isNativeShuffleLabel("Better Shuffle")).toBe(false)
+    expect(isNativeShuffleLabel("Shuffle+ Queue")).toBe(false)
   })
 })

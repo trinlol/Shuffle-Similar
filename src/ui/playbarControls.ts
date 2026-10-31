@@ -145,10 +145,16 @@ export const watchForLegacyExtensionButtons = () => {
 export const NATIVE_SHUFFLE_SELECTORS = [
   `button[data-testid="control-button-shuffle"]:not([data-testid="${SHUFFLE_SIMILAR_TEST_ID}"]):not([data-testid="better-shuffle-button"]):not([data-testid="similar-shuffle-button"])`,
   `.main-shuffleButton-button:not([data-testid="${SHUFFLE_SIMILAR_TEST_ID}"]):not([data-testid="better-shuffle-button"]):not([data-testid="similar-shuffle-button"])`,
+  `.player-controls__left button[data-encore-id="buttonTertiary"][aria-label*="shuffle" i]:not([data-testid="${SHUFFLE_SIMILAR_TEST_ID}"]):not([data-testid="better-shuffle-button"]):not([data-testid="similar-shuffle-button"])`,
+  `.player-controls__left button[aria-label*="shuffle" i]:not([data-testid="${SHUFFLE_SIMILAR_TEST_ID}"]):not([data-testid="better-shuffle-button"]):not([data-testid="similar-shuffle-button"])`,
 ]
 
 const PLAYBAR_CONTROL_MUTATION_SELECTOR = [
   `[data-testid="${SHUFFLE_SIMILAR_TEST_ID}"]`,
+  ".player-controls__left",
+  ".player-controls__buttons",
+  'button[data-testid="control-button-skip-back"]',
+  'button[data-encore-id="buttonTertiary"]',
   ...NATIVE_SHUFFLE_SELECTORS,
 ].join(", ")
 
@@ -180,12 +186,12 @@ export const isShuffleSimilarButton = (element: Element | null): boolean =>
   element instanceof HTMLButtonElement &&
   element.getAttribute("data-testid") === SHUFFLE_SIMILAR_TEST_ID
 
-const isNativeShuffleLabel = (label: string): boolean => {
+export const isNativeShuffleLabel = (label: string): boolean => {
   const normalized = label.toLowerCase()
   if (!normalized.includes("shuffle")) return false
-  if (normalized.includes("smart")) return false
   if (normalized.includes("similar")) return false
   if (normalized.includes("better")) return false
+  if (normalized.includes("shuffle+")) return false
   return true
 }
 
@@ -223,6 +229,19 @@ export const findNativeShuffleButton = (): HTMLButtonElement | null => {
         return button
       }
     }
+
+    const leftControls = playbar.querySelector(".player-controls__left")
+    if (leftControls) {
+      const skipBack = leftControls.querySelector('button[data-testid="control-button-skip-back"]')
+      const leftButtons = leftControls.querySelectorAll("button")
+      for (let index = 0; index < leftButtons.length; index += 1) {
+        const button = leftButtons.item(index)
+        if (!(button instanceof HTMLButtonElement)) continue
+        if (button === skipBack) break
+        if (isShuffleSimilarButton(button) || isLegacyExtensionButton(button)) continue
+        return button
+      }
+    }
   }
 
   return null
@@ -245,12 +264,32 @@ export const isNativeShuffleTarget = (target: EventTarget | null): boolean => {
 
 export const placeElementBeforeShuffle = (element: HTMLElement): boolean => {
   const shuffleButton = findNativeShuffleButton()
-  if (!shuffleButton) return false
-  if (element === shuffleButton) return true
-
-  if (element.nextElementSibling !== shuffleButton) {
-    shuffleButton.before(element)
+  if (shuffleButton) {
+    if (element === shuffleButton) return true
+    if (element.nextElementSibling !== shuffleButton) {
+      shuffleButton.before(element)
+    }
+    return true
   }
 
-  return true
+  const leftControls =
+    document.querySelector<HTMLElement>('[data-testid="now-playing-bar"] .player-controls__left') ??
+    document.querySelector<HTMLElement>(
+      ".main-nowPlayingBar-nowPlayingBar .player-controls__left"
+    ) ??
+    document.querySelector<HTMLElement>(".player-controls__left")
+
+  if (leftControls) {
+    const skipBack = leftControls.querySelector('button[data-testid="control-button-skip-back"]')
+    if (skipBack) {
+      if (element.nextElementSibling !== skipBack) {
+        skipBack.before(element)
+      }
+    } else if (leftControls.firstElementChild !== element) {
+      leftControls.prepend(element)
+    }
+    return true
+  }
+
+  return false
 }

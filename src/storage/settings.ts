@@ -17,6 +17,7 @@ export type SmartConfig = {
   tasteProfile?: TasteProfileState
   tasteProfileNow?: number
   tasteContextKey?: string
+  playHistoryEntries?: PlayHistoryEntry[]
 }
 
 export const PLAY_HISTORY_STORAGE_KEY = "shuffleSimilar:playHistory"

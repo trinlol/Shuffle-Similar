@@ -51,18 +51,41 @@ const injectStyles = () => {
       display: inline-flex !important;
       align-items: center;
       justify-content: center;
+      width: 32px;
+      height: 32px;
       min-width: 32px;
       min-height: 32px;
       padding: 0;
+      border: none;
+      background: transparent !important;
       border-radius: 50%;
+      flex-shrink: 0;
       opacity: 1 !important;
       visibility: visible !important;
-      color: rgba(var(--spice-rgb-text, 255, 255, 255), 0.7) !important;
+      pointer-events: auto !important;
+      color: rgba(var(--spice-rgb-text, 255, 255, 255), 0.72) !important;
       transition: color 160ms ease, opacity 160ms ease, transform 120ms ease;
     }
 
+    button[data-testid="${TEST_ID}"].${BUTTON_CLASS}:hover {
+      color: var(--spice-text, #ffffff) !important;
+    }
+
     button[data-testid="${TEST_ID}"].${BUTTON_CLASS}[aria-pressed="true"] {
-      color: var(--spice-button, #1ed760) !important;
+      color: var(--spice-button-active, var(--spice-button, var(--accent-color, #1ed760))) !important;
+    }
+
+    button[data-testid="${TEST_ID}"].${BUTTON_CLASS}[aria-pressed="true"]::after {
+      content: "";
+      position: absolute;
+      bottom: 2px;
+      left: 50%;
+      width: 4px;
+      height: 4px;
+      border-radius: 50%;
+      background-color: currentColor;
+      transform: translateX(-50%);
+      pointer-events: none;
     }
 
     button[data-testid="${TEST_ID}"].${BUTTON_CLASS}[aria-busy="true"] {
@@ -80,7 +103,16 @@ const injectStyles = () => {
     }
 
     button[data-testid="${TEST_ID}"].${BUTTON_CLASS} svg {
+      width: 16px !important;
+      height: 16px !important;
+      fill: currentColor !important;
+      color: inherit !important;
       filter: none !important;
+      display: block !important;
+    }
+
+    button[data-testid="${TEST_ID}"].${BUTTON_CLASS} svg path {
+      fill: currentColor !important;
     }
 
     body > #similar-mix-status {
@@ -176,10 +208,19 @@ const updateTooltip = (label: string) => {
   buttonTippy?.setContent(label)
 }
 
+const OBSCURED_ACTIVE_CLASSES = new Set([
+  "A6OB2PW88hienapJaToK",
+  "wnuQy_DUIeaUfitOSBBL",
+  "encore-internal-color-text-bright-accent",
+])
+
 const stripActivePresentation = (button: HTMLButtonElement) => {
-  for (const className of Array.from(button.classList)) {
-    if (className.toLowerCase().includes("active")) {
-      button.classList.remove(className)
+  const elements = [button, ...Array.from(button.querySelectorAll<HTMLElement>("*"))]
+  for (const element of elements) {
+    for (const className of Array.from(element.classList)) {
+      if (className.toLowerCase().includes("active") || OBSCURED_ACTIVE_CLASSES.has(className)) {
+        element.classList.remove(className)
+      }
     }
   }
 
@@ -228,8 +269,30 @@ const placeButton = (): boolean => {
   return placeElementBeforeShuffle(buttonElement)
 }
 
-const createShuffleSimilarButton = (shuffleReference: HTMLButtonElement): HTMLButtonElement => {
-  const button = sanitizeClonedPlaybarButton(shuffleReference.cloneNode(true) as HTMLButtonElement)
+const createFallbackPlaybarButton = (): HTMLButtonElement => {
+  const button = document.createElement("button")
+  button.type = "button"
+  button.tabIndex = 0
+  button.setAttribute("data-encore-id", "buttonTertiary")
+  button.className = "Button-buttonTertiary-small-iconOnly-useBrowserDefaultFocusStyle"
+
+  const iconWrapper = document.createElement("span")
+  iconWrapper.className = "e-91000-button__icon-wrapper"
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg")
+  svg.setAttribute("viewBox", "0 0 16 16")
+  svg.setAttribute("width", "16")
+  svg.setAttribute("height", "16")
+  iconWrapper.appendChild(svg)
+  button.appendChild(iconWrapper)
+  return button
+}
+
+const createShuffleSimilarButton = (
+  shuffleReference: HTMLButtonElement | null
+): HTMLButtonElement => {
+  const button = shuffleReference
+    ? sanitizeClonedPlaybarButton(shuffleReference.cloneNode(true) as HTMLButtonElement)
+    : createFallbackPlaybarButton()
 
   button.setAttribute("data-testid", TEST_ID)
   button.setAttribute("aria-label", "Turn on Similar Mix")
@@ -240,12 +303,18 @@ const createShuffleSimilarButton = (shuffleReference: HTMLButtonElement): HTMLBu
 
   stripActivePresentation(button)
 
-  const svg = button.querySelector("svg")
-  if (svg) {
-    applyEnhanceIcon(svg)
-    svg.setAttribute("aria-hidden", "true")
-    svg.removeAttribute("aria-label")
+  let svg = button.querySelector("svg")
+  if (!svg) {
+    svg = document.createElementNS("http://www.w3.org/2000/svg", "svg")
+    svg.setAttribute("viewBox", "0 0 16 16")
+    svg.setAttribute("width", "16")
+    svg.setAttribute("height", "16")
+    button.appendChild(svg)
   }
+
+  applyEnhanceIcon(svg)
+  svg.setAttribute("aria-hidden", "true")
+  svg.removeAttribute("aria-label")
 
   button.addEventListener("click", (event) => {
     event.preventDefault()
@@ -282,7 +351,14 @@ const mountButton = (): boolean => {
   }
 
   const shuffleButton = findNativeShuffleButton()
-  if (!shuffleButton) return false
+  const leftControls =
+    document.querySelector<HTMLElement>('[data-testid="now-playing-bar"] .player-controls__left') ??
+    document.querySelector<HTMLElement>(
+      ".main-nowPlayingBar-nowPlayingBar .player-controls__left"
+    ) ??
+    document.querySelector<HTMLElement>(".player-controls__left")
+
+  if (!shuffleButton && !leftControls) return false
 
   injectStyles()
 
@@ -295,7 +371,10 @@ const mountButton = (): boolean => {
   if (orphan && orphan !== buttonElement) orphan.remove()
 
   buttonElement = createShuffleSimilarButton(shuffleButton)
-  shuffleButton.before(buttonElement)
+  if (!placeElementBeforeShuffle(buttonElement)) {
+    buttonElement = null
+    return false
+  }
 
   if (Spicetify.Tippy && Spicetify.TippyProps) {
     buttonTippy = Spicetify.Tippy(buttonElement, {
@@ -327,13 +406,12 @@ const ensureButtonInDom = () => {
 
 const schedulePlacementWatch = () => {
   const shuffleButton = findNativeShuffleButton()
-  const parent = shuffleButton?.parentElement
-  if (!parent) return
-
   const playbar =
     document.querySelector<HTMLElement>('[data-testid="now-playing-bar"]') ??
-    document.querySelector<HTMLElement>(".main-nowPlayingBar-nowPlayingBar")
-  const root = playbar ?? parent
+    document.querySelector<HTMLElement>(".main-nowPlayingBar-nowPlayingBar") ??
+    document.querySelector<HTMLElement>(".player-controls__left")
+  const root = playbar ?? shuffleButton?.parentElement ?? null
+  if (!root) return
   if (placementObserver && placementObserverRoot === root) return
 
   placementObserver?.disconnect()
@@ -343,7 +421,7 @@ const schedulePlacementWatch = () => {
     ensureButtonInDom()
     schedulePlacementWatch()
     updateNativeShuffleGuard()
-  }, 250)
+  }, 200)
 
   placementObserver = new MutationObserver((records) => {
     if (playbarMutationsAffectControls(records, buttonElement)) syncPlacement()
@@ -458,6 +536,24 @@ const handleButtonClick = (event: MouseEvent) => {
   void disableShuffleSimilar()
 }
 
+export const triggerToggleShuffleSimilar = () => {
+  if (isBusy || shuffleSimilarStatus.getSnapshot().copy.busy) return
+  if (sessionManager.isToggleEnabled()) {
+    void disableShuffleSimilar()
+  } else {
+    void enableShuffleSimilar()
+  }
+}
+
+export const triggerRefreshShuffleSimilar = () => {
+  if (isBusy || shuffleSimilarStatus.getSnapshot().copy.busy) return
+  if (sessionManager.isToggleEnabled()) {
+    void reshuffleActiveSession()
+  } else {
+    void enableShuffleSimilar()
+  }
+}
+
 const waitForShuffleButton = () => {
   const attemptMount = () => {
     if (!mountButton()) return false
@@ -470,13 +566,13 @@ const waitForShuffleButton = () => {
   let attempts = 0
   const interval = setInterval(() => {
     attempts += 1
-    if (attemptMount() || attempts >= 60) {
+    if (attemptMount() || attempts >= 120) {
       clearInterval(interval)
-      if (attempts >= 60) {
+      if (attempts >= 120) {
         console.warn("[Shuffle Similar] Could not find shuffle button to mount playbar control")
       }
     }
-  }, 2000)
+  }, 500)
 }
 
 const syncUiFromPlayback = () => {

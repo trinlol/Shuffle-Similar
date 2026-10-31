@@ -8,9 +8,12 @@ import {
 } from "../services/shuffleEngine"
 import { sessionManager } from "../session/SessionManager"
 import { pickSeedFromCollection } from "../sources/profileTracks"
-import { syncShuffleSimilarFromPlayback } from "./shuffleSimilarUiState"
+import { shuffleSimilarStatus, syncShuffleSimilarFromPlayback } from "./shuffleSimilarUiState"
+import { triggerRefreshShuffleSimilar, triggerToggleShuffleSimilar } from "./toggleButton"
 
 let contextMenuRegistered = false
+let profileMenuRegistered = false
+let contextMenuV2Patched = false
 let contextActionBusy = false
 
 const formatContextActionError = (error: unknown, fallbackMessage: string): string => {
@@ -103,9 +106,12 @@ const isAlbumUri = (uri: string) => {
   return getUriType(uri) === Type.ALBUM
 }
 
+const isCollectionUri = (uri: string): boolean =>
+  uri.startsWith("spotify:collection:") || /^spotify:user:[^:]+:collection$/i.test(uri)
+
 const isPlaylistOnly = (uris: string[]): boolean => {
   if (!uris?.length || uris.length > 1) return false
-  return isPlaylistContext(uris[0])
+  return isPlaylistContext(uris[0]) || isCollectionUri(uris[0])
 }
 
 const isNonPlaylist = (uris: string[]): boolean => {
@@ -126,6 +132,107 @@ const isNonPlaylist = (uris: string[]): boolean => {
         uri.startsWith("spotify:album:")
     )
   }
+}
+
+const isSupportedSimilarMixTarget = (uris: string[]): boolean =>
+  isNonPlaylist(uris) || isPlaylistOnly(uris)
+
+const patchContextMenuV2 = () => {
+  if (contextMenuV2Patched) return
+  const contextMenuV2 = (
+    Spicetify as typeof Spicetify & {
+      ContextMenuV2?: {
+        parseProps?: (props: Record<string, unknown> | undefined) => string[] | undefined
+      }
+    }
+  ).ContextMenuV2
+
+  if (!contextMenuV2 || typeof contextMenuV2.parseProps !== "function") return
+
+  const originalParseProps = contextMenuV2.parseProps.bind(contextMenuV2)
+  contextMenuV2.parseProps = (props) => {
+    const parsed = originalParseProps(props)
+    if (parsed && parsed.length > 0) return parsed
+    if (!props || typeof props !== "object") return parsed
+
+    const candidates = [
+      props.target,
+      props.entityUri,
+      props.contextUri,
+      (props.track as { uri?: unknown } | undefined)?.uri,
+      (props.album as { uri?: unknown } | undefined)?.uri,
+      (props.playlist as { uri?: unknown } | undefined)?.uri,
+      (props.artist as { uri?: unknown } | undefined)?.uri,
+      (props.data as { uri?: unknown } | undefined)?.uri,
+    ]
+
+    for (const candidate of candidates) {
+      if (typeof candidate === "string" && candidate.startsWith("spotify:")) {
+        return [candidate]
+      }
+    }
+
+    if (Array.isArray(props.items)) {
+      const itemUris = props.items
+        .map((item) =>
+          typeof item === "string"
+            ? item
+            : typeof (item as { uri?: unknown } | null)?.uri === "string"
+              ? ((item as { uri: string }).uri ?? "")
+              : ""
+        )
+        .filter((uri) => uri.startsWith("spotify:"))
+      if (itemUris.length > 0) return itemUris
+    }
+
+    return parsed
+  }
+
+  contextMenuV2Patched = true
+}
+
+const registerProfileMenu = () => {
+  if (profileMenuRegistered) return
+  if (!Spicetify.Menu?.Item || !Spicetify.Menu?.SubMenu) return
+
+  const toggleItem = new Spicetify.Menu.Item(
+    "Similar Mix Active",
+    sessionManager.isToggleEnabled(),
+    () => {
+      triggerToggleShuffleSimilar()
+    }
+  )
+
+  const refreshItem = new Spicetify.Menu.Item("Refresh Similar Mix", false, () => {
+    triggerRefreshShuffleSimilar()
+  })
+
+  const createPlaylistItem = new Spicetify.Menu.Item(
+    "Create Similar Playlist from Current Track",
+    false,
+    () => {
+      const currentUri = Spicetify.Player.data?.item?.uri
+      if (!currentUri) {
+        Spicetify.showNotification("Play a track first to create a Similar playlist", true)
+        return
+      }
+      runCreateSimilarPlaylist([currentUri])
+    }
+  )
+
+  const subMenu = new Spicetify.Menu.SubMenu("Shuffle Similar", [
+    toggleItem,
+    refreshItem,
+    createPlaylistItem,
+  ])
+  subMenu.register()
+
+  shuffleSimilarStatus.subscribe(() => {
+    toggleItem.setState(sessionManager.isToggleEnabled())
+  })
+
+  profileMenuRegistered = true
+  console.info("[Shuffle Similar] Profile menu registered")
 }
 
 const handlePlayWithShuffleSimilar = async (uris: string[]) => {
@@ -166,6 +273,9 @@ const handleCreateSimilarPlaylist = async (uris: string[]) => {
 }
 
 export const registerContextMenu = () => {
+  patchContextMenuV2()
+  registerProfileMenu()
+
   if (contextMenuRegistered) return
 
   if (!Spicetify.ContextMenu?.Item) {
@@ -175,28 +285,14 @@ export const registerContextMenu = () => {
   new Spicetify.ContextMenu.Item(
     "Start Similar Mix",
     runPlayWithShuffleSimilar,
-    isNonPlaylist,
+    isSupportedSimilarMixTarget,
     "enhance"
   ).register()
 
   new Spicetify.ContextMenu.Item(
     "Create Similar Playlist",
     runCreateSimilarPlaylist,
-    isNonPlaylist,
-    "playlist"
-  ).register()
-
-  new Spicetify.ContextMenu.Item(
-    "Start Similar Mix",
-    runPlayWithShuffleSimilar,
-    isPlaylistOnly,
-    "enhance"
-  ).register()
-
-  new Spicetify.ContextMenu.Item(
-    "Create Similar Playlist",
-    runCreateSimilarPlaylist,
-    isPlaylistOnly,
+    isSupportedSimilarMixTarget,
     "playlist"
   ).register()
 
