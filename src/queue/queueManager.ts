@@ -187,13 +187,44 @@ const disableNativeShuffle = () => {
   }
 }
 
+const QUEUE_CLEAR_SETTLE_TIMEOUT_MS = 2_000
+const QUEUE_CLEAR_SETTLE_POLL_MS = 25
+
+/** Counts manually queued entries in the local snapshot Spotify's multi-track
+ * `addToQueue` rewrites from. Returns null when the shape is unavailable. */
+const countLocallyQueuedEntries = (): number | null => {
+  try {
+    const inner = Spicetify.Platform.PlayerAPI._queue?._queue?.nextTracks
+    const tracks = Array.isArray(inner) ? inner : Spicetify.Queue?.nextTracks
+    if (!Array.isArray(tracks)) return null
+    return tracks.filter(
+      (track: any) => (track?.provider ?? track?.contextTrack?.metadata?.provider) === "queue"
+    ).length
+  } catch {
+    return null
+  }
+}
+
+/** Spotify resolves `clearQueue()` before its local queue state reflects the
+ * clear. A multi-track `addToQueue` issued in that window copies the stale
+ * snapshot and writes the old queued tracks back ahead of the new mix. */
+const waitForQueueClearToSettle = async (): Promise<boolean> => {
+  const deadline = Date.now() + QUEUE_CLEAR_SETTLE_TIMEOUT_MS
+  for (;;) {
+    const queued = countLocallyQueuedEntries()
+    if (queued === null || queued === 0) return true
+    if (Date.now() >= deadline) return false
+    await wait(QUEUE_CLEAR_SETTLE_POLL_MS)
+  }
+}
+
 const clearQueueSafe = async (): Promise<boolean> => {
   try {
     await runQueueOperationWithTimeout(
       () => Spicetify.Platform.PlayerAPI.clearQueue(),
       "the queue clear"
     )
-    return true
+    return await waitForQueueClearToSettle()
   } catch (error) {
     if (error instanceof QueueOperationTimeoutError) throw error
     return false

@@ -417,4 +417,64 @@ describe("queuePrefixMatches", () => {
     expect(nextTracks).toEqual([{ uri: "spotify:track:old" }])
     expect(clearQueue).toHaveBeenCalledTimes(2)
   })
+  it("waits for Spotify to apply a clear before adding, so stale queued tracks are not re-added", async () => {
+    // Models Spotify 1.3.x: clearQueue resolves before local queue state updates,
+    // and a multi-track addToQueue rewrites from that (possibly stale) local snapshot.
+    type Entry = { uri: string; provider: string }
+    const state: { nextTracks: Entry[]; queueRevision: number } = {
+      nextTracks: [
+        { uri: "spotify:track:old-queued", provider: "queue" },
+        { uri: "spotify:track:context", provider: "context" },
+      ],
+      queueRevision: 1,
+    }
+    const publicQueue = {
+      get nextTracks() {
+        return state.nextTracks
+      },
+    }
+    const apply = (next: Entry[], delay: number) =>
+      setTimeout(() => {
+        state.nextTracks = next
+        state.queueRevision += 1
+      }, delay)
+
+    vi.stubGlobal("Spicetify", {
+      Queue: publicQueue,
+      Player: { data: { item: { uri: "spotify:track:current" } }, getShuffle: () => false },
+      Platform: {
+        PlayerAPI: {
+          _queue: { _queue: state },
+          clearQueue: vi.fn(async () => {
+            apply(
+              state.nextTracks.filter((entry) => entry.provider !== "queue"),
+              60
+            )
+          }),
+          addToQueue: vi.fn(async (items: Array<{ uri: string }>) => {
+            const snapshot = [...state.nextTracks]
+            const lastQueued = snapshot.map((entry) => entry.provider).lastIndexOf("queue")
+            snapshot.splice(
+              lastQueued + 1,
+              0,
+              ...items.map((item) => ({ ...item, provider: "queue" }))
+            )
+            apply(snapshot, 20)
+          }),
+        },
+      },
+    })
+
+    const commit = await replaceUpcomingQueue("spotify:track:current", [
+      "spotify:track:new-one",
+      "spotify:track:new-two",
+    ])
+
+    expect(commit.verified).toBe(true)
+    expect(state.nextTracks.map((entry) => entry.uri)).toEqual([
+      "spotify:track:new-one",
+      "spotify:track:new-two",
+      "spotify:track:context",
+    ])
+  })
 })

@@ -96,12 +96,35 @@ const injectStyles = () => {
 
     body > #similar-mix-status[data-state="building"],
     body > #similar-mix-status[data-state="refreshing"],
-    body > #similar-mix-status[data-state="stopping"],
-    body > #similar-mix-status[data-state="error"],
-    body > #similar-mix-status[data-state="degraded"] {
+    body > #similar-mix-status[data-state="stopping"] {
       opacity: 1;
       visibility: visible;
       transform: translate(-50%, 0);
+    }
+
+    /* Errors are also surfaced as a Spotify notification, so the capsule must
+       not stay pinned over the UI. Distinct names restart the timer when the
+       state changes between error and degraded. */
+    body > #similar-mix-status[data-state="error"] {
+      visibility: visible;
+      animation: similar-mix-alert-error 6s ease forwards;
+    }
+
+    body > #similar-mix-status[data-state="degraded"] {
+      visibility: visible;
+      animation: similar-mix-alert-degraded 6s ease forwards;
+    }
+
+    @keyframes similar-mix-alert-error {
+      0% { opacity: 0; transform: translate(-50%, 6px); }
+      5%, 88% { opacity: 1; visibility: visible; transform: translate(-50%, 0); }
+      100% { opacity: 0; visibility: hidden; transform: translate(-50%, -2px); }
+    }
+
+    @keyframes similar-mix-alert-degraded {
+      0% { opacity: 0; transform: translate(-50%, 6px); }
+      5%, 88% { opacity: 1; visibility: visible; transform: translate(-50%, 0); }
+      100% { opacity: 0; visibility: hidden; transform: translate(-50%, -2px); }
     }
 
     body > #similar-mix-status[data-state="on"] {
@@ -130,6 +153,11 @@ const injectStyles = () => {
         opacity: 0;
         visibility: visible;
         transform: translate(-50%, 0);
+      }
+
+      body > #similar-mix-status[data-state="error"],
+      body > #similar-mix-status[data-state="degraded"] {
+        animation-timing-function: step-end;
       }
     }
   `
