@@ -2,6 +2,16 @@
 
 All notable changes to Shuffle Similar are documented in this file.
 
+## [2.1.3] - 2026-10-31
+
+### Fixed
+
+- Stops rebuilding the whole queue after nearly every track change. Spotify's queue briefly still lists the song that just started, which was mistaken for foreign tracks, so the mix was cleared and re-added and Spotify showed "Added to queue"
+- Starting or refreshing a mix no longer fails with "Spotify did not confirm the Similar Mix queue" when tracks were already queued. Spotify reports a queue clear before it takes effect, and the old queued tracks were written back in front of the new mix
+- A lagging Spotify queue snapshot can no longer turn a successful clear into "Spotify could not replace the upcoming queue"; the clear is retried once and the result is still verified
+- Error and degraded status banners fade after a few seconds instead of staying on screen until restart
+
+
 ## [2.1.2] - 2026-08-31
 
 ### Fixed
