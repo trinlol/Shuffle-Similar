@@ -477,4 +477,29 @@ describe("queuePrefixMatches", () => {
       "spotify:track:context",
     ])
   })
+  it("does not fail a replace when Spotify accepts the clear but the local snapshot never updates", async () => {
+    vi.useFakeTimers()
+    const nextTracks: Array<{ uri: string; provider: string }> = [
+      { uri: "spotify:track:old", provider: "queue" },
+    ]
+    const clearQueue = vi.fn(async () => undefined)
+    const addToQueue = vi.fn(async (items: Array<{ uri: string }>) => {
+      nextTracks.splice(0, nextTracks.length, ...items.map((i) => ({ ...i, provider: "queue" })))
+    })
+    vi.stubGlobal("Spicetify", {
+      Queue: { nextTracks },
+      Player: { data: { item: { uri: "spotify:track:current" } }, getShuffle: () => false },
+      Platform: { PlayerAPI: { clearQueue, addToQueue } },
+    })
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined)
+
+    const pending = replaceUpcomingQueue("spotify:track:current", ["spotify:track:new"])
+    await vi.advanceTimersByTimeAsync(10_000)
+    const commit = await pending
+
+    expect(commit.verified).toBe(true)
+    expect(clearQueue).toHaveBeenCalledTimes(2)
+    expect(addToQueue).toHaveBeenCalledTimes(1)
+    warn.mockRestore()
+  })
 })

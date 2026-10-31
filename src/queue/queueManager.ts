@@ -220,11 +220,28 @@ const waitForQueueClearToSettle = async (): Promise<boolean> => {
 
 const clearQueueSafe = async (): Promise<boolean> => {
   try {
-    await runQueueOperationWithTimeout(
-      () => Spicetify.Platform.PlayerAPI.clearQueue(),
-      "the queue clear"
-    )
-    return await waitForQueueClearToSettle()
+    const clear = () =>
+      runQueueOperationWithTimeout(
+        () => Spicetify.Platform.PlayerAPI.clearQueue(),
+        "the queue clear"
+      )
+    await clear()
+
+    // Settling is advisory. Spotify accepted the clear, so a snapshot that
+    // lags or never updates must not turn it into a failure; the add and the
+    // convergence check that follow still verify the real outcome.
+    if (!(await waitForQueueClearToSettle())) {
+      console.warn(
+        "[Shuffle Similar] Queue still showed manually queued tracks after clear; retrying once"
+      )
+      await clear()
+      if (!(await waitForQueueClearToSettle())) {
+        console.warn(
+          "[Shuffle Similar] Queue snapshot did not reflect the clear; continuing to verification"
+        )
+      }
+    }
+    return true
   } catch (error) {
     if (error instanceof QueueOperationTimeoutError) throw error
     return false
