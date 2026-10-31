@@ -19,10 +19,27 @@ export const syncKnownQueue = (uris: string[]) => {
   lastKnownQueue = serializeQueue(uris)
 }
 
+const getPlayingUri = (): string | null => {
+  try {
+    return Spicetify.Player.data?.item?.uri ?? null
+  } catch {
+    return null
+  }
+}
+
+/** Right after a track change Spotify's public queue can still list the track
+ * that just started at index 0 for ~100ms. That entry is playing, not upcoming,
+ * and must not make the queue look tampered with. */
+const getUpcomingExcludingPlayingHead = (): string[] => {
+  const upcoming = getUpcomingQueueUris()
+  const playing = getPlayingUri()
+  return playing && upcoming[0] === playing ? upcoming.slice(1) : upcoming
+}
+
 export const detectForeignInjection = (): string[] => {
   if (!guardEnabled || !sessionManager.isActive()) return []
 
-  const current = getUpcomingQueueUris()
+  const current = getUpcomingExcludingPlayingHead()
   if (!lastKnownQueue) {
     lastKnownQueue = serializeQueue(current)
     return []
