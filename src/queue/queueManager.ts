@@ -1,5 +1,12 @@
 import { fisherYatesShuffle } from "../algorithm/shuffle"
 import type { TrackCandidate } from "../session/types"
+import {
+  type QueueSnapshot,
+  queuedUris,
+  readInternalQueueSnapshot,
+  readQueueSnapshot,
+  waitForQueue,
+} from "./queueState"
 
 type PlaybackContext = {
   uri: string
@@ -7,7 +14,25 @@ type PlaybackContext = {
 }
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
-const QUEUE_OPERATION_TIMEOUT_MS = 5_000
+
+/** Every queue timing in one place. Waits on Spotify state go through
+ * `waitForQueue`, which resolves on `queue_update` before these limits. */
+export const QUEUE_TIMING = {
+  /** Upper bound for a clear to show up in Spotify's local snapshot. */
+  clearSettleMs: 2_000,
+  /** Upper bound for a single PlayerAPI call to resolve. */
+  operationTimeoutMs: 5_000,
+  /** Re-read after a verified takeover to catch late context injection. */
+  postVerifyGuardMs: 250,
+  /** Delay before queueing after starting playback. */
+  afterPlayDelayMs: 400,
+  /** Upper bound for the queue to match a requested mix. */
+  convergenceTimeoutMs: 1_000,
+  /** Fallback poll interval while waiting for convergence. */
+  convergencePollMs: 100,
+  /** Poll interval while waiting for the player to reach the seed track. */
+  seedTransitionPollMs: 100,
+} as const
 
 export class QueueOperationTimeoutError extends Error {
   readonly code = "SERVICE_UNAVAILABLE"
@@ -21,7 +46,7 @@ export class QueueOperationTimeoutError extends Error {
 export const runQueueOperationWithTimeout = async <T>(
   operation: () => Promise<T> | T,
   label: string,
-  timeoutMs = QUEUE_OPERATION_TIMEOUT_MS
+  timeoutMs: number = QUEUE_TIMING.operationTimeoutMs
 ): Promise<T> => {
   let timer: ReturnType<typeof setTimeout> | undefined
   const timeout = new Promise<never>((_, reject) => {
@@ -147,31 +172,9 @@ export const detachFromPlaylistContext = async (albumUri?: string | null) => {
   }
 }
 
-const readQueueUri = (track: any): string | null => {
-  const uri = track?.uri ?? track?.contextTrack?.uri
-  return typeof uri === "string" ? uri : null
-}
-
-export const getRawUpcomingQueueUris = (): string[] => {
-  try {
-    const publicTracks = (Spicetify.Queue?.nextTracks ?? [])
-      .map(readQueueUri)
-      .filter((uri: string | null): uri is string => Boolean(uri))
-      .filter((uri: string) => uri !== "spotify:delimiter")
-    if (publicTracks.length > 0) return publicTracks
-
-    // Compatibility fallback for Spotify builds where the public queue has
-    // not hydrated yet. Private internals are never the primary contract.
-    const queue = Spicetify.Platform.PlayerAPI._queue?._queueState
-    if (!queue) return []
-
-    const nextUp = (queue.nextUp ?? []).map((track: { uri: string }) => track.uri)
-    const queued = (queue.queued ?? []).map((track: { uri: string }) => track.uri)
-    return [...nextUp, ...queued].filter((uri) => uri !== "spotify:delimiter")
-  } catch {
-    return []
-  }
-}
+/** Upcoming URIs in play order, as Spotify shows them (duplicates kept). */
+export const getRawUpcomingQueueUris = (): string[] =>
+  readQueueSnapshot().entries.map((entry) => entry.uri)
 
 export const getUpcomingQueueUris = (): string[] => [...new Set(getRawUpcomingQueueUris())]
 
@@ -187,36 +190,15 @@ const disableNativeShuffle = () => {
   }
 }
 
-const QUEUE_CLEAR_SETTLE_TIMEOUT_MS = 2_000
-const QUEUE_CLEAR_SETTLE_POLL_MS = 25
-
-/** Counts manually queued entries in the local snapshot Spotify's multi-track
- * `addToQueue` rewrites from. Returns null when the shape is unavailable. */
-const countLocallyQueuedEntries = (): number | null => {
-  try {
-    const inner = Spicetify.Platform.PlayerAPI._queue?._queue?.nextTracks
-    const tracks = Array.isArray(inner) ? inner : Spicetify.Queue?.nextTracks
-    if (!Array.isArray(tracks)) return null
-    return tracks.filter(
-      (track: any) => (track?.provider ?? track?.contextTrack?.metadata?.provider) === "queue"
-    ).length
-  } catch {
-    return null
-  }
-}
-
 /** Spotify resolves `clearQueue()` before its local queue state reflects the
  * clear. A multi-track `addToQueue` issued in that window copies the stale
  * snapshot and writes the old queued tracks back ahead of the new mix. */
-const waitForQueueClearToSettle = async (): Promise<boolean> => {
-  const deadline = Date.now() + QUEUE_CLEAR_SETTLE_TIMEOUT_MS
-  for (;;) {
-    const queued = countLocallyQueuedEntries()
-    if (queued === null || queued === 0) return true
-    if (Date.now() >= deadline) return false
-    await wait(QUEUE_CLEAR_SETTLE_POLL_MS)
-  }
-}
+const waitForQueueClearToSettle = async (): Promise<boolean> =>
+  (
+    await waitForQueue((snapshot) => queuedUris(snapshot).length === 0, {
+      timeoutMs: QUEUE_TIMING.clearSettleMs,
+    })
+  ).met
 
 const clearQueueSafe = async (): Promise<boolean> => {
   try {
@@ -302,7 +284,7 @@ export const queueTracksAfterPlayback = async (queueUris: string[]): Promise<voi
   const tracks = queueUris.filter((uri) => uri.startsWith("spotify:track:"))
   if (tracks.length === 0) return
 
-  await wait(400)
+  await wait(QUEUE_TIMING.afterPlayDelayMs)
   await addTracksSafe(tracks)
 }
 
@@ -317,18 +299,11 @@ export type QueueCommit = {
 export const getConfirmedQueueOwnership = (commit: QueueCommit): string[] =>
   commit.verified ? [...commit.requestedUris] : []
 
-const readPrivateUpcomingQueueUris = (): string[] => {
-  try {
-    const queueState = Spicetify.Platform.PlayerAPI._queue?._queueState
-    const entries = queueState?.nextTracks ?? []
-    return entries
-      .map(readQueueUri)
-      .filter(
-        (uri: unknown): uri is string => typeof uri === "string" && uri.startsWith("spotify:track:")
-      )
-  } catch {
-    return []
-  }
+const isTrackUri = (uri: string) => uri.startsWith("spotify:track:")
+
+const snapshotTrackUris = (snapshot: QueueSnapshot, dedupe: boolean): string[] => {
+  const uris = snapshot.entries.map((entry) => entry.uri).filter(isTrackUri)
+  return dedupe ? [...new Set(uris)] : uris
 }
 
 export const queuePrefixMatches = (expected: string[], actual: string[], limit = 8): boolean => {
@@ -373,49 +348,54 @@ const waitForQueueConvergence = async (
   expected: string[],
   options: { strict?: boolean; stableReads?: number } = {}
 ): Promise<QueueCommit> => {
-  const requestedUris = expected.filter((uri) => uri.startsWith("spotify:track:"))
-  let actualUris = options.strict ? getRawUpcomingQueueUris() : getUpcomingQueueUris()
+  const requestedUris = expected.filter(isTrackUri)
+  const dedupe = !options.strict
   if (requestedUris.length === 0) {
+    const actualUris = options.strict ? getRawUpcomingQueueUris() : getUpcomingQueueUris()
     return { requestedUris, actualUris, verified: actualUris.length === 0 }
   }
 
   const matches = options.strict
-    ? (expectedUris: string[], actualUris: string[]) =>
-        queueTakeoverSnapshotMatches(expectedUris, actualUris)
+    ? (expectedUris: string[], observedUris: string[]) =>
+        queueTakeoverSnapshotMatches(expectedUris, observedUris)
     : queuePrefixMatches
-  const requiredStableReads = Math.max(1, options.stableReads ?? 1)
   const requestedSet = new Set(requestedUris)
-  let stableReads = 0
-  let previousSnapshot = ""
-  for (let attempt = 0; attempt < 10; attempt += 1) {
-    const publicUris = (options.strict ? getRawUpcomingQueueUris() : getUpcomingQueueUris()).filter(
-      (uri) => uri.startsWith("spotify:track:")
-    )
-    const privateUris = readPrivateUpcomingQueueUris()
+  // A snapshot counts as stable once it has held for (stableReads - 1) poll
+  // intervals, matching the old fixed-interval loop whichever check fires.
+  const stableForMs = (Math.max(1, options.stableReads ?? 1) - 1) * QUEUE_TIMING.convergencePollMs
+  let actualUris: string[] = []
+  let stableKey = ""
+  let stableSince = 0
+
+  const converged = (snapshot: QueueSnapshot): boolean => {
+    const publicUris = snapshotTrackUris(snapshot, dedupe)
+    const privateUris = snapshotTrackUris(readInternalQueueSnapshot(), false)
     const comparable = publicUris.length > 0 ? publicUris : privateUris
     actualUris = comparable
     const publicMatches = publicUris.length === 0 || matches(requestedUris, publicUris)
     const privateSnapshotIsRelevant =
       publicUris.length < requestedUris.length && privateUris.some((uri) => requestedSet.has(uri))
     const privateMatches = !privateSnapshotIsRelevant || matches(requestedUris, privateUris)
-    const converged = options.strict
+    const ok = options.strict
       ? publicMatches && privateMatches && comparable.length > 0
       : matches(requestedUris, comparable)
-    if (converged) {
-      const snapshot = `${publicUris.join("\n")}\n--private--\n${privateUris.join("\n")}`
-      stableReads = snapshot === previousSnapshot ? stableReads + 1 : 1
-      previousSnapshot = snapshot
-      if (stableReads >= requiredStableReads) {
-        return { requestedUris, actualUris: comparable, verified: true }
-      }
-    } else {
-      stableReads = 0
-      previousSnapshot = ""
+    if (!ok) {
+      stableKey = ""
+      return false
     }
-    await wait(100)
+    const key = `${publicUris.join("\n")}\n--private--\n${privateUris.join("\n")}`
+    if (key !== stableKey) {
+      stableKey = key
+      stableSince = Date.now()
+    }
+    return Date.now() - stableSince >= stableForMs
   }
 
-  return { requestedUris, actualUris, verified: false }
+  const { met } = await waitForQueue(converged, {
+    timeoutMs: QUEUE_TIMING.convergenceTimeoutMs,
+    pollMs: QUEUE_TIMING.convergencePollMs,
+  })
+  return { requestedUris, actualUris, verified: met }
 }
 
 export const replaceUpcomingQueue = async (
@@ -437,10 +417,9 @@ export const replaceUpcomingQueue = async (
     return commit
   }
 
-  // Use the documented PlayerAPI queue contract for live playback. The
-  // private `_queue._client.setQueue` shape is version-sensitive and accepts
-  // internal ContextTrack records that can appear in Spotify's queue while
-  // still failing when the player tries to resolve them.
+  // Use the documented PlayerAPI queue contract for live playback. Spotify's
+  // private setQueue path is version-sensitive and accepts internal records
+  // that can appear in the queue while still failing to play.
   if (!(await clearQueueSafe())) {
     throw new Error("Spotify could not replace the upcoming queue")
   }
@@ -491,7 +470,7 @@ export const replaceUpcomingQueueForNewMix = async (
       stableReads: 2,
     })
     if (lastCommit.verified) {
-      await wait(250)
+      await wait(QUEUE_TIMING.postVerifyGuardMs)
       const guardedSnapshot = getRawUpcomingQueueUris().filter((uri) =>
         uri.startsWith("spotify:track:")
       )
@@ -525,7 +504,7 @@ export const playSeedAndQueue = async (
   // before we replace the upcoming queue, preventing the queue from being wiped out.
   let attempts = 0
   while (Spicetify.Player.data?.item?.uri !== seedUri && attempts < 15) {
-    await wait(100)
+    await wait(QUEUE_TIMING.seedTransitionPollMs)
     attempts++
   }
 

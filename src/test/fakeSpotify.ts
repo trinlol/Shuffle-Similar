@@ -20,14 +20,18 @@ export type FakeSpotifyOptions = {
   /** Ignore a clear/add issued while an earlier update is still pending. */
   dropWhileStale?: boolean
   emitQueueUpdate?: boolean
+  /** When false, `Spicetify.Queue.nextTracks` stays empty, as before Spotify hydrates it. */
+  publicQueueHydrated?: boolean
 }
 
 type Listener = (event: { type: string; data: unknown }) => void
 
+/** Shaped like Spotify 1.3.6 entries: no top-level `uri`. */
 export type FakeQueueEntry = {
-  uri: string
-  provider: "queue" | "context"
   contextTrack: { uri: string; metadata: { provider: string; is_queued: string } }
+  provider: "queue" | "context"
+  removed: boolean
+  blocked: boolean
 }
 
 export type FakeSpotify = {
@@ -45,15 +49,17 @@ export type FakeSpotify = {
 }
 
 const entry = (uri: string, provider: "queue" | "context"): FakeQueueEntry => ({
-  uri,
-  provider,
   contextTrack: { uri, metadata: { provider, is_queued: String(provider === "queue") } },
+  provider,
+  removed: false,
+  blocked: false,
 })
 
 export const createFakeSpotify = (options: FakeSpotifyOptions = {}): FakeSpotify => {
   const applyDelayMs = options.applyDelayMs ?? 150
   const headLagMs = options.headLagMs ?? 80
   const emitQueueUpdate = options.emitQueueUpdate ?? true
+  const publicQueueHydrated = options.publicQueueHydrated ?? true
   const startedAt = Date.now()
 
   let playing: string | null = options.playing ?? null
@@ -161,7 +167,7 @@ export const createFakeSpotify = (options: FakeSpotifyOptions = {}): FakeSpotify
     vi.stubGlobal("Spicetify", {
       Queue: {
         get nextTracks() {
-          return visibleEntries()
+          return publicQueueHydrated ? visibleEntries() : []
         },
         get queueRevision() {
           return String(revision)
@@ -188,7 +194,7 @@ export const createFakeSpotify = (options: FakeSpotifyOptions = {}): FakeSpotify
   return {
     install,
     queued: () => [...queued],
-    upcoming: () => visibleEntries().map((item) => item.uri),
+    upcoming: () => visibleEntries().map((item) => item.contextTrack.uri),
     playing: () => playing,
     nextTrack,
     fireSongChange,

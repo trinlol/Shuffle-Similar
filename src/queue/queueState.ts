@@ -68,7 +68,20 @@ const readRevision = (): string | null => {
   }
 }
 
-/** Reads the upcoming queue without ever throwing. */
+/** Spotify's internal queue state, read directly. Never throws. */
+export const readInternalQueueSnapshot = (): QueueSnapshot => {
+  try {
+    const state = runtime()?.Platform?.PlayerAPI?._queue?._queueState
+    if (!state) return EMPTY_SNAPSHOT
+    // Spotify plays manually queued tracks before the context's next-up tracks.
+    const entries = [...toEntries(state.queued), ...toEntries(state.nextUp)]
+    return { entries, revision: readRevision(), source: "internal" }
+  } catch {
+    return EMPTY_SNAPSHOT
+  }
+}
+
+/** Reads the upcoming queue, preferring the public queue, without ever throwing. */
 export const readQueueSnapshot = (): QueueSnapshot => {
   try {
     const spicetify = runtime()
@@ -78,12 +91,7 @@ export const readQueueSnapshot = (): QueueSnapshot => {
     if (publicEntries.length > 0) {
       return { entries: publicEntries, revision: readRevision(), source: "public" }
     }
-
-    const state = spicetify.Platform?.PlayerAPI?._queue?._queueState
-    if (!state) return EMPTY_SNAPSHOT
-    // Spotify plays manually queued tracks before the context's next-up tracks.
-    const internalEntries = [...toEntries(state.queued), ...toEntries(state.nextUp)]
-    return { entries: internalEntries, revision: readRevision(), source: "internal" }
+    return readInternalQueueSnapshot()
   } catch {
     return EMPTY_SNAPSHOT
   }

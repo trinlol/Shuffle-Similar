@@ -1,7 +1,14 @@
-import { describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
+import { createFakeSpotify } from "../test/fakeSpotify"
+import { replaceUpcomingQueue } from "./queueManager"
 import { QueueMutationCoordinator } from "./queueMutationCoordinator"
 
 describe("QueueMutationCoordinator", () => {
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+  })
+
   it("serializes queue mutations and continues after a rejected operation", async () => {
     const coordinator = new QueueMutationCoordinator()
     const operations: string[] = []
@@ -27,5 +34,21 @@ describe("QueueMutationCoordinator", () => {
     await expect(first).rejects.toThrow("failed")
     await expect(second).resolves.toBe(2)
     expect(operations).toEqual(["first:start", "first:end", "second"])
+  })
+
+  it("concurrent replaceUpcomingQueue calls never interleave", async () => {
+    vi.useFakeTimers()
+    const current = "spotify:track:current"
+    const fake = createFakeSpotify({ playing: current, queued: ["spotify:track:old"] })
+    fake.install()
+    const coordinator = new QueueMutationCoordinator()
+
+    const first = coordinator.run(() => replaceUpcomingQueue(current, ["spotify:track:a"]))
+    const second = coordinator.run(() => replaceUpcomingQueue(current, ["spotify:track:b"]))
+    await vi.advanceTimersByTimeAsync(10_000)
+    await Promise.all([first, second])
+
+    expect(fake.operations.map((entry) => entry.op)).toEqual(["clear", "add", "clear", "add"])
+    expect(fake.queued()).toEqual(["spotify:track:b"])
   })
 })

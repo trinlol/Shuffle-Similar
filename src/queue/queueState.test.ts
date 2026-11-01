@@ -1,6 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createFakeSpotify } from "../test/fakeSpotify"
-import { queuedUris, readQueueSnapshot, waitForQueue } from "./queueState"
+import {
+  queuedUris,
+  readInternalQueueSnapshot,
+  readQueueSnapshot,
+  waitForQueue,
+} from "./queueState"
 
 const uris = (...ids: string[]) => ids.map((id) => `spotify:track:${id}`)
 const queueEmpty = (snapshot: ReturnType<typeof readQueueSnapshot>) =>
@@ -98,5 +103,15 @@ describe("queueState", () => {
       { uri: "spotify:track:n", provider: "context" },
     ])
     expect(queuedUris(snapshot)).toEqual(["spotify:track:q"])
+  })
+
+  it("readInternalQueueSnapshot reads Spotify's internal state even when the public queue is hydrated", () => {
+    createFakeSpotify({ queued: uris("q"), contextTail: uris("ctx") }).install()
+
+    const internal = readInternalQueueSnapshot()
+
+    expect(internal.source).toBe("internal")
+    expect(internal.entries.map((entry) => entry.uri)).toEqual(uris("q", "ctx"))
+    expect(readQueueSnapshot().source).toBe("public")
   })
 })

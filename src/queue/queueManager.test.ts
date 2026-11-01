@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
+import { createFakeSpotify } from "../test/fakeSpotify"
 import {
   appendTracksToQueue,
   getConfirmedQueueOwnership,
@@ -322,7 +323,7 @@ describe("queuePrefixMatches", () => {
         PlayerAPI: {
           clearQueue,
           addToQueue,
-          _queue: { _queueState: { nextTracks: privateTracks } },
+          _queue: { _queueState: { queued: privateTracks } },
         },
       },
     })
@@ -365,7 +366,7 @@ describe("queuePrefixMatches", () => {
         PlayerAPI: {
           clearQueue,
           addToQueue,
-          _queue: { _queueState: { nextTracks: stalePrivateTracks } },
+          _queue: { _queueState: { queued: stalePrivateTracks } },
         },
       },
     })
@@ -417,66 +418,6 @@ describe("queuePrefixMatches", () => {
     expect(nextTracks).toEqual([{ uri: "spotify:track:old" }])
     expect(clearQueue).toHaveBeenCalledTimes(2)
   })
-  it("waits for Spotify to apply a clear before adding, so stale queued tracks are not re-added", async () => {
-    // Models Spotify 1.3.x: clearQueue resolves before local queue state updates,
-    // and a multi-track addToQueue rewrites from that (possibly stale) local snapshot.
-    type Entry = { uri: string; provider: string }
-    const state: { nextTracks: Entry[]; queueRevision: number } = {
-      nextTracks: [
-        { uri: "spotify:track:old-queued", provider: "queue" },
-        { uri: "spotify:track:context", provider: "context" },
-      ],
-      queueRevision: 1,
-    }
-    const publicQueue = {
-      get nextTracks() {
-        return state.nextTracks
-      },
-    }
-    const apply = (next: Entry[], delay: number) =>
-      setTimeout(() => {
-        state.nextTracks = next
-        state.queueRevision += 1
-      }, delay)
-
-    vi.stubGlobal("Spicetify", {
-      Queue: publicQueue,
-      Player: { data: { item: { uri: "spotify:track:current" } }, getShuffle: () => false },
-      Platform: {
-        PlayerAPI: {
-          _queue: { _queue: state },
-          clearQueue: vi.fn(async () => {
-            apply(
-              state.nextTracks.filter((entry) => entry.provider !== "queue"),
-              60
-            )
-          }),
-          addToQueue: vi.fn(async (items: Array<{ uri: string }>) => {
-            const snapshot = [...state.nextTracks]
-            const lastQueued = snapshot.map((entry) => entry.provider).lastIndexOf("queue")
-            snapshot.splice(
-              lastQueued + 1,
-              0,
-              ...items.map((item) => ({ ...item, provider: "queue" }))
-            )
-            apply(snapshot, 20)
-          }),
-        },
-      },
-    })
-
-    const commit = await replaceUpcomingQueue("spotify:track:current", [
-      "spotify:track:new-one",
-      "spotify:track:new-two",
-    ])
-
-    expect(commit.verified).toBe(true)
-    expect(state.nextTracks.map((entry) => entry.uri)).toEqual([
-      "spotify:track:new-one",
-      "spotify:track:new-two",
-      "spotify:track:context",
-    ])
-  })
   it("does not fail a replace when Spotify accepts the clear but the local snapshot never updates", async () => {
     vi.useFakeTimers()
     const nextTracks: Array<{ uri: string; provider: string }> = [
@@ -501,5 +442,78 @@ describe("queuePrefixMatches", () => {
     expect(clearQueue).toHaveBeenCalledTimes(2)
     expect(addToQueue).toHaveBeenCalledTimes(1)
     warn.mockRestore()
+  })
+
+  describe("against a lagging Spotify", () => {
+    const uris = (...ids: string[]) => ids.map((id) => `spotify:track:${id}`)
+    const current = "spotify:track:current"
+
+    it("replace does not re-add stale queued tracks when the clear lags", async () => {
+      vi.useFakeTimers()
+      const fake = createFakeSpotify({ playing: current, queued: uris("old-a", "old-b") })
+      fake.install()
+
+      const pending = replaceUpcomingQueue(current, uris("new-1", "new-2"))
+      await vi.advanceTimersByTimeAsync(5_000)
+      const commit = await pending
+
+      expect(commit.verified).toBe(true)
+      expect(fake.queued()).toEqual(uris("new-1", "new-2"))
+    })
+
+    it("replace continues when queue_update never arrives for a clear", async () => {
+      vi.useFakeTimers()
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined)
+      const fake = createFakeSpotify({
+        playing: current,
+        queued: uris("old-a", "old-b"),
+        dropWhileStale: true,
+      })
+      fake.install()
+      fake.nextTrack()
+
+      const pending = replaceUpcomingQueue(fake.playing(), uris("new-1", "new-2"))
+      await vi.advanceTimersByTimeAsync(10_000)
+      const commit = await pending
+
+      expect(commit.verified).toBe(true)
+      expect(fake.operations.map((entry) => entry.op)).toEqual(["clear", "clear", "add"])
+      expect(fake.queued()).toEqual(uris("new-1", "new-2"))
+      warn.mockRestore()
+    })
+
+    it("fresh takeover accepts a context tail after the full mix", async () => {
+      vi.useFakeTimers()
+      const fake = createFakeSpotify({
+        playing: current,
+        queued: uris("old"),
+        contextTail: uris("ctx-1", "ctx-2"),
+      })
+      fake.install()
+
+      const pending = replaceUpcomingQueueForNewMix(current, uris("new-1", "new-2"))
+      await vi.advanceTimersByTimeAsync(10_000)
+      const commit = await pending
+
+      expect(commit.verified).toBe(true)
+      expect(fake.upcoming()).toEqual(uris("new-1", "new-2", "ctx-1", "ctx-2"))
+    })
+
+    it("fresh takeover verifies from Spotify's internal queue state before the public queue hydrates", async () => {
+      vi.useFakeTimers()
+      const fake = createFakeSpotify({
+        playing: current,
+        queued: uris("old"),
+        publicQueueHydrated: false,
+      })
+      fake.install()
+
+      const pending = replaceUpcomingQueueForNewMix(current, uris("new-1", "new-2"))
+      await vi.advanceTimersByTimeAsync(10_000)
+      const commit = await pending
+
+      expect(commit.verified).toBe(true)
+      expect(fake.queued()).toEqual(uris("new-1", "new-2"))
+    })
   })
 })

@@ -99,4 +99,19 @@ describe("autoplay guard", () => {
 
     expect(detectForeignInjection()).toEqual(["spotify:track:foreign"])
   })
+
+  it("drops only one copy of the playing track from the head", () => {
+    const playing = "spotify:track:p"
+    const owned = ["spotify:track:a", playing]
+    vi.stubGlobal("Spicetify", { Player: { data: { item: { uri: playing } } } })
+    mocks.isActive.mockReturnValue(true)
+    mocks.getQueuedUris.mockReturnValue(owned)
+    mocks.ownsQueueTrack.mockImplementation((uri) => owned.includes(uri))
+    // Stale head, then the owned mix (which legitimately queues the same track again), then context.
+    mocks.getUpcomingQueueUris.mockReturnValue([playing, ...owned, "spotify:track:ctx"])
+    enableAutoplayGuard()
+    syncKnownQueue(owned)
+
+    expect(detectForeignInjection()).toEqual([])
+  })
 })
