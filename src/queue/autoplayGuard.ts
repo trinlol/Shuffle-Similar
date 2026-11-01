@@ -52,14 +52,28 @@ export const detectForeignInjection = (): string[] => {
     return []
   }
 
-  const ownedQueue = sessionManager.getQueuedUris()
-  const completeOwnedPrefix =
-    ownedQueue.length > 0 &&
-    current.length >= ownedQueue.length &&
-    ownedQueue.every((uri, index) => current[index] === uri)
-  if (completeOwnedPrefix) {
-    lastKnownQueue = serializeQueue(ownedQueue)
-    return []
+  // Spotify appends context/autoplay tracks after the mix, and can silently
+  // drop an owned track it cannot play. Neither is an injection: only a
+  // non-owned track placed before the last owned track is. Requiring every
+  // owned track at its exact index made one dropped track trigger a full
+  // queue rebuild on every song change.
+  let lastOwnedIndex = -1
+  for (let index = current.length - 1; index >= 0; index -= 1) {
+    if (sessionManager.ownsQueueTrack(current[index])) {
+      lastOwnedIndex = index
+      break
+    }
+  }
+  if (lastOwnedIndex >= 0) {
+    const injected = current
+      .slice(0, lastOwnedIndex)
+      .filter((uri) => !sessionManager.ownsQueueTrack(uri))
+    if (injected.length === 0) {
+      lastKnownQueue = serializeQueue(sessionManager.getQueuedUris())
+      return []
+    }
+    lastKnownQueue = serializeQueue(current.filter((uri) => sessionManager.ownsQueueTrack(uri)))
+    return injected
   }
 
   const cleaned = current.filter((uri) => sessionManager.ownsQueueTrack(uri))

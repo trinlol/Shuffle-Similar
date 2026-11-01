@@ -180,8 +180,10 @@ export const isShuffleSimilarButton = (element: Element | null): boolean =>
   element instanceof HTMLButtonElement &&
   element.getAttribute("data-testid") === SHUFFLE_SIMILAR_TEST_ID
 
-const isNativeShuffleLabel = (label: string): boolean => {
-  const normalized = label.toLowerCase()
+export const isNativeShuffleLabel = (label: string): boolean => {
+  // Spotify appends " for <context name>" (e.g. "Enable Shuffle for Similar to - July").
+  // Judge only the action: a playlist named "Similar…" or "Better…" must not hide the button.
+  const normalized = label.toLowerCase().split(" for ")[0]
   if (!normalized.includes("shuffle")) return false
   if (normalized.includes("smart")) return false
   if (normalized.includes("similar")) return false

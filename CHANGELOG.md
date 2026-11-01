@@ -4,6 +4,18 @@ All notable changes to Shuffle Similar are documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- Stops rebuilding the queue (and showing "Added to queue") on every song change after Spotify silently drops one of the mix's tracks. Only a track placed in front of the mix's own tracks now counts as foreign
+- The Similar Mix playbar button now appears when the playing playlist's name contains "Similar", "Smart" or "Better", such as playlists saved by Shuffle Similar itself
+- A refill that was waiting its turn can no longer overwrite a mix started in the meantime
+- Waiting for Spotify's queue now follows its `queue_update` event instead of fixed sleeps, and a fallback that crashed before Spotify's queue loaded is fixed
+
+### Added
+
+- **Copy Similar Mix diagnostics** in the context menu: a short log of recent queue operations (no tracks or account details) to paste into bug reports
+- Error messages end with a short reference code, for example "(ref: queue_not_confirmed)"
+
 ### Changed
 
 - The context-menu action that saves a mix as a playlist is now called **Save Similar Mix as Playlist** (was "Create Similar Playlist"), so it can't be confused with **Start Similar Mix**

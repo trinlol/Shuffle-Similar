@@ -114,4 +114,39 @@ describe("autoplay guard", () => {
 
     expect(detectForeignInjection()).toEqual([])
   })
+
+  it("does not treat an owned track that Spotify dropped as foreign injection", () => {
+    // Spotify silently dropped mix-two (e.g. unavailable); the context tail follows the mix.
+    const owned = ["spotify:track:mix-one", "spotify:track:mix-two", "spotify:track:mix-three"]
+    mocks.isActive.mockReturnValue(true)
+    mocks.getQueuedUris.mockReturnValue(owned)
+    mocks.ownsQueueTrack.mockImplementation((uri) => owned.includes(uri))
+    mocks.getUpcomingQueueUris.mockReturnValue([
+      "spotify:track:mix-one",
+      "spotify:track:mix-three",
+      "spotify:track:context-a",
+      "spotify:track:context-b",
+    ])
+    enableAutoplayGuard()
+    syncKnownQueue(owned)
+
+    expect(detectForeignInjection()).toEqual([])
+  })
+
+  it("still reports a foreign track placed between owned tracks after a drop", () => {
+    const owned = ["spotify:track:mix-one", "spotify:track:mix-two", "spotify:track:mix-three"]
+    mocks.isActive.mockReturnValue(true)
+    mocks.getQueuedUris.mockReturnValue(owned)
+    mocks.ownsQueueTrack.mockImplementation((uri) => owned.includes(uri))
+    mocks.getUpcomingQueueUris.mockReturnValue([
+      "spotify:track:mix-one",
+      "spotify:track:foreign",
+      "spotify:track:mix-three",
+      "spotify:track:context-a",
+    ])
+    enableAutoplayGuard()
+    syncKnownQueue(owned)
+
+    expect(detectForeignInjection()).toEqual(["spotify:track:foreign"])
+  })
 })
