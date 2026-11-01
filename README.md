@@ -73,6 +73,8 @@ npm run build-local
 
 The release bundle is produced with `npm run build:release`.
 
+To check a build against the real app, start Spotify with `--remote-debugging-port=9222`, play any track, and run `npm run smoke`. It mutes Spotify while it runs, then restores volume, playback and the Similar Mix toggle.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
