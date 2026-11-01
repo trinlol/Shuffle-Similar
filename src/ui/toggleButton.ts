@@ -6,6 +6,7 @@ import {
 } from "../services/shuffleEngine"
 import { sessionManager } from "../session/SessionManager"
 import { debounce } from "../utils/debounce"
+import { COPY } from "./copy"
 import { applyEnhanceIcon } from "./icons"
 import { enforceNativeShuffleOff, updateNativeShuffleGuard } from "./nativeShuffleGuard"
 import {
@@ -175,13 +176,13 @@ export const getToggleButtonPresentation = (
   snapshot: SimilarMixStatusSnapshot,
   enabled: boolean
 ): ToggleButtonPresentation => {
-  let label = "Turn on Similar Mix"
+  let label: string = COPY.toggleOn
 
-  if (snapshot.state === "building") label = "Building Similar Mix…"
-  else if (snapshot.state === "refreshing") label = "Refreshing Similar Mix…"
-  else if (snapshot.state === "stopping") label = "Turning off Similar Mix…"
-  else if (enabled) label = "Turn off Similar Mix · Shift+click to refresh"
-  else if (snapshot.state === "error") label = "Retry Similar Mix"
+  if (snapshot.state === "building") label = COPY.toggleBuilding
+  else if (snapshot.state === "refreshing") label = COPY.toggleRefreshing
+  else if (snapshot.state === "stopping") label = COPY.toggleStopping
+  else if (enabled) label = `${COPY.toggleOff} · ${COPY.toggleRefreshHint}`
+  else if (snapshot.state === "error") label = COPY.toggleRetry
 
   return {
     pressed: enabled,
@@ -261,8 +262,8 @@ const createShuffleSimilarButton = (shuffleReference: HTMLButtonElement): HTMLBu
   const button = sanitizeClonedPlaybarButton(shuffleReference.cloneNode(true) as HTMLButtonElement)
 
   button.setAttribute("data-testid", TEST_ID)
-  button.setAttribute("aria-label", "Turn on Similar Mix")
-  button.setAttribute("title", "Turn on Similar Mix")
+  button.setAttribute("aria-label", COPY.toggleOn)
+  button.setAttribute("title", COPY.toggleOn)
   button.setAttribute("aria-pressed", "false")
   button.setAttribute("aria-busy", "false")
   button.classList.add(BUTTON_CLASS)

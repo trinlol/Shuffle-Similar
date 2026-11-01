@@ -2,6 +2,12 @@
 
 All notable changes to Shuffle Similar are documented in this file.
 
+## [Unreleased]
+
+### Changed
+
+- The context-menu action that saves a mix as a playlist is now called **Save Similar Mix as Playlist** (was "Create Similar Playlist"), so it can't be confused with **Start Similar Mix**
+
 ## [2.1.3] - 2026-10-31
 
 ### Fixed

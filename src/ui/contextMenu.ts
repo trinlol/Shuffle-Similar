@@ -9,6 +9,7 @@ import {
 } from "../services/shuffleEngine"
 import { sessionManager } from "../session/SessionManager"
 import { pickSeedFromCollection } from "../sources/profileTracks"
+import { COPY, savedPlaylistMessage } from "./copy"
 import { syncShuffleSimilarFromPlayback } from "./shuffleSimilarUiState"
 
 let contextMenuRegistered = false
@@ -39,7 +40,7 @@ const runContextAction = (work: () => Promise<void>, fallbackMessage: string) =>
 }
 
 const runPlayWithShuffleSimilar = (uris: string[]) => {
-  Spicetify.showNotification("Building your Similar Mix...")
+  Spicetify.showNotification(COPY.buildingMix)
   runContextAction(
     () => handlePlayWithShuffleSimilar(uris),
     "Similar Mix could not start. Try another selection."
@@ -47,11 +48,8 @@ const runPlayWithShuffleSimilar = (uris: string[]) => {
 }
 
 const runCreateSimilarPlaylist = (uris: string[]) => {
-  Spicetify.showNotification("Creating your Similar playlist...")
-  runContextAction(
-    () => handleCreateSimilarPlaylist(uris),
-    "The Similar playlist could not be created. Try again."
-  )
+  Spicetify.showNotification(COPY.savingPlaylist)
+  runContextAction(() => handleCreateSimilarPlaylist(uris), COPY.savePlaylistFailed)
 }
 
 const runPreferenceFeedback = (uris: string[], sentiment: -1 | 1) => {
@@ -161,9 +159,7 @@ const handleCreateSimilarPlaylist = async (uris: string[]) => {
 
   await Spicetify.Player.playUri(playlist.uri)
 
-  Spicetify.showNotification(
-    `Created "Similar to - ${seed.trackName}" with ${playlist.trackCount} tracks. Playing now.`
-  )
+  Spicetify.showNotification(savedPlaylistMessage(seed.trackName, playlist.trackCount))
 }
 
 export const registerContextMenu = () => {
@@ -174,28 +170,28 @@ export const registerContextMenu = () => {
   }
 
   new Spicetify.ContextMenu.Item(
-    "Start Similar Mix",
+    COPY.menuStartMix,
     runPlayWithShuffleSimilar,
     isNonPlaylist,
     "enhance"
   ).register()
 
   new Spicetify.ContextMenu.Item(
-    "Create Similar Playlist",
+    COPY.menuSavePlaylist,
     runCreateSimilarPlaylist,
     isNonPlaylist,
     "playlist"
   ).register()
 
   new Spicetify.ContextMenu.Item(
-    "Start Similar Mix",
+    COPY.menuStartMix,
     runPlayWithShuffleSimilar,
     isPlaylistOnly,
     "enhance"
   ).register()
 
   new Spicetify.ContextMenu.Item(
-    "Create Similar Playlist",
+    COPY.menuSavePlaylist,
     runCreateSimilarPlaylist,
     isPlaylistOnly,
     "playlist"
@@ -217,7 +213,7 @@ export const registerContextMenu = () => {
   new Spicetify.ContextMenu.Item("Why this track?", showTrackExplanation, isSingleTrack).register()
 
   new Spicetify.ContextMenu.Item(
-    "Copy Similar Mix diagnostics",
+    COPY.menuCopyDiagnostics,
     () => void copyDiagnostics(),
     () => true,
     "copy"

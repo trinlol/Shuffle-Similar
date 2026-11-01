@@ -47,7 +47,8 @@ spicetify apply
 - Click the playbar control immediately left of Spotify's shuffle button to build a Similar Mix around the current track.
 - Click the active control to turn Similar Mix off. **Shift+click** it while active to refresh the mix.
 - Right-click a track, album, artist, or playlist and choose **Start Similar Mix**.
-- Choose **Create Similar Playlist** to save a generated mix without leaving the automatic queue active.
+- Choose **Save Similar Mix as Playlist** to save a generated mix without leaving the automatic queue active.
+- If something goes wrong, right-click a track and choose **Copy Similar Mix diagnostics**, then paste the result into a bug report. It contains only operation names, timings, counts and short error codes, never tracks or account details.
 
 While Similar Mix is active, Spotify's shuffle control remains focusable but unavailable. Its label explains that turning Similar Mix off restores native shuffle.
 
