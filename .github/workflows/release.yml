@@ -1,0 +1,84 @@
+name: Release
+
+# Publishes a GitHub release with the rebuilt bundle when a version tag is
+# pushed. Running it by hand (workflow_dispatch) is always a dry run: it
+# builds, verifies and prints the release notes without publishing.
+
+on:
+  push:
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Require the committed bundle to match a fresh build
+        run: |
+          npm run build:release
+          if ! git diff --quiet -- shuffle-similar.js; then
+            echo "::error::shuffle-similar.js is out of date. Run 'npm run build:release' and commit the result."
+            exit 1
+          fi
+
+      - name: Read the package version
+        id: version
+        run: echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Require the tag to match package.json
+        if: github.event_name == 'push'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          if [ "$GITHUB_REF_NAME" != "v$VERSION" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match package.json version $VERSION"
+            exit 1
+          fi
+
+      - name: Write the release notes
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          node scripts/extract-changelog.mjs "$VERSION" > notes.md
+          cat >> notes.md <<'NOTES'
+
+          ## Install (manual)
+
+          Download `shuffle-similar.js` below, copy it into your Spicetify Extensions folder, then run:
+
+          ```bash
+          spicetify config extensions shuffle-similar.js
+          spicetify apply
+          ```
+          NOTES
+          cat notes.md
+
+      - name: Publish the release
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" shuffle-similar.js \
+            --title "Shuffle Similar $GITHUB_REF_NAME" \
+            --notes-file notes.md
