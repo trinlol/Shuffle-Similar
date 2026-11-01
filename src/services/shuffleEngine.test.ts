@@ -90,7 +90,9 @@ vi.mock("../queue/queueManager", () => ({
 }))
 
 import { clearOperations, getOperations } from "../diagnostics/operationLog"
+import { disableAutoplayGuard, enableAutoplayGuard, syncKnownQueue } from "../queue/autoplayGuard"
 import { sessionManager } from "../session/SessionManager"
+import { queueMutationCoordinator } from "./sessionState"
 import {
   handlePlaybackFailure,
   handleSongChange,
@@ -377,5 +379,40 @@ describe("operation log", () => {
     expect(ops()).toContainEqual(
       expect.objectContaining({ op: "mix.start", outcome: "failed", reason: "queue_not_confirmed" })
     )
+  })
+})
+
+describe("foreign-track cleanup", () => {
+  afterEach(() => {
+    disableAutoplayGuard()
+  })
+
+  it("does not overwrite a newer mix that took the queue while the cleanup was waiting", async () => {
+    const owned = candidate("owned")
+    sessionManager.startSession(seed)
+    sessionManager.setToggleEnabled(true)
+    sessionManager.registerCandidates([owned])
+    sessionManager.setQueuedUris([owned.uri])
+    enableAutoplayGuard()
+    syncKnownQueue([owned.uri])
+    upcomingQueueUris = ["spotify:track:foreign", owned.uri]
+
+    // Another queue mutation (e.g. a refresh starting a new mix) holds the lane.
+    let release: (() => void) | undefined
+    const busy = queueMutationCoordinator.run(
+      () =>
+        new Promise<void>((resolve) => {
+          release = resolve
+        })
+    )
+    const refill = refillQueueIfNeeded()
+    await Promise.resolve()
+    // The newer mix commits and supersedes the session the refill read.
+    sessionManager.invalidatePendingMutations()
+    release?.()
+    await busy
+    await refill
+
+    expect(replaceUpcoming).not.toHaveBeenCalled()
   })
 })

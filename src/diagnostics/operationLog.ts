@@ -20,6 +20,8 @@ export type DiagnosticsState = { toggleEnabled: boolean; sessionActive: boolean 
 
 const CAPACITY = 50
 const SHORT_CODE = /^[a-z][a-z0-9_.]{0,39}$/
+/** Count keys are code identifiers, so camelCase is allowed; still no URIs or spaces. */
+const COUNT_KEY = /^[a-z][a-zA-Z0-9_]{0,39}$/
 
 const records: OperationRecord[] = []
 let stateProvider: (() => DiagnosticsState) | null = null
@@ -28,7 +30,7 @@ const sanitizeCounts = (counts?: Record<string, number>): Record<string, number>
   if (!counts) return undefined
   const clean: Record<string, number> = {}
   for (const [key, value] of Object.entries(counts)) {
-    if (SHORT_CODE.test(key) && typeof value === "number" && Number.isFinite(value)) {
+    if (COUNT_KEY.test(key) && typeof value === "number" && Number.isFinite(value)) {
       clean[key] = value
     }
   }

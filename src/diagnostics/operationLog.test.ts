@@ -31,6 +31,16 @@ describe("operation log", () => {
     expect(operations[49].counts).toEqual({ index: 59 })
   })
 
+  it("keeps camelCase count keys such as queuedBefore", () => {
+    recordOperation({
+      op: "queue.clear",
+      outcome: "ok",
+      counts: { queuedBefore: 3, queuedAfter: 0 },
+    })
+
+    expect(getOperations()[0].counts).toEqual({ queuedBefore: 3, queuedAfter: 0 })
+  })
+
   it("drops reason text that is not a short code", () => {
     recordOperation({ op: "queue.verify", outcome: "failed", reason: "queue_not_confirmed" })
     recordOperation({ op: "queue.verify", outcome: "failed", reason: "spotify:track:abc leaked" })

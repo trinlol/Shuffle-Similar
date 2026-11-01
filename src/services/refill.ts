@@ -58,8 +58,13 @@ const runRefillQueueIfNeeded = async (): Promise<void> => {
   sessionManager.setRefilling(true)
   try {
     const revision = sessionManager.getRevision()
-    const foreign = detectForeignInjection()
-    if (foreign.length > 0) {
+    // Read and repair the queue inside the mutation lane: a mix started while
+    // this cleanup waited owns the queue now, and its tracks must not be
+    // replaced with this session's stale view.
+    await queueMutationCoordinator.run(async () => {
+      if (!sessionManager.isActive() || sessionManager.getRevision() !== revision) return
+      const foreign = detectForeignInjection()
+      if (foreign.length === 0) return
       recordOperation({
         op: "guard.foreign_cleanup",
         outcome: "info",
@@ -67,8 +72,9 @@ const runRefillQueueIfNeeded = async (): Promise<void> => {
       })
       const cleaned = getUpcomingQueueUris().filter((uri) => sessionManager.ownsQueueTrack(uri))
       const current = Spicetify.Player.data?.item?.uri
-      await queueMutationCoordinator.run(() => replaceUpcomingQueue(current, cleaned))
-    }
+      await replaceUpcomingQueue(current, cleaned)
+    })
+    if (!sessionManager.isActive() || sessionManager.getRevision() !== revision) return
 
     const settings = getSessionConfig(seed)
     const ownedUpcoming = sessionManager.getQueuedUris()
