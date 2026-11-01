@@ -4,6 +4,7 @@ import {
   buildTrackBatch,
 } from "../algorithm/progressiveBlend"
 import { fisherYatesShuffle } from "../algorithm/shuffle"
+import { createQueueError } from "../diagnostics/failureReasons"
 import { recordOperation } from "../diagnostics/operationLog"
 import {
   detectForeignInjection,
@@ -588,12 +589,11 @@ export const startShuffleSimilar = async (
       const prefixStatus = queuePrefixMatches(queueCommit.requestedUris, queueCommit.actualUris)
         ? "ordered prefix matched"
         : "ordered prefix differed"
-      const error = new Error(
+      throw createQueueError(
         `Spotify did not confirm the Similar Mix queue ` +
-          `(${queueCommit.actualUris.length}/${queueCommit.requestedUris.length} visible; ${prefixStatus})`
+          `(${queueCommit.actualUris.length}/${queueCommit.requestedUris.length} visible; ${prefixStatus})`,
+        "queue_not_confirmed"
       )
-      ;(error as Error & { code?: string }).code = "SERVICE_UNAVAILABLE"
-      throw error
     }
     await detachFromPlaylistContext(seed.albumUri)
     commitPreparedSession(prepared)

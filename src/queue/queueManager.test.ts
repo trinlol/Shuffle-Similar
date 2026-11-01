@@ -516,4 +516,32 @@ describe("queuePrefixMatches", () => {
       expect(fake.queued()).toEqual(uris("new-1", "new-2"))
     })
   })
+
+  describe("failure reasons", () => {
+    it("a clear that Spotify rejects fails the replace with reason queue_replace_failed", async () => {
+      vi.stubGlobal("Spicetify", {
+        Queue: { nextTracks: [] },
+        Player: { data: { item: { uri: "spotify:track:current" } }, getShuffle: () => false },
+        Platform: {
+          PlayerAPI: {
+            clearQueue: async () => Promise.reject(new Error("nope")),
+            addToQueue: async () => undefined,
+          },
+        },
+      })
+
+      await expect(
+        replaceUpcomingQueueForNewMix("spotify:track:current", ["spotify:track:new"])
+      ).rejects.toMatchObject({ code: "SERVICE_UNAVAILABLE", reason: "queue_replace_failed" })
+    })
+
+    it("a stuck queue clear times out with reason queue_timeout", async () => {
+      vi.useFakeTimers()
+      stubNeverSettlingPlayer()
+      const pending = replaceQueue(["spotify:track:a"])
+      const assertion = expect(pending).rejects.toMatchObject({ reason: "queue_timeout" })
+      await vi.advanceTimersByTimeAsync(10_000)
+      await assertion
+    })
+  })
 })

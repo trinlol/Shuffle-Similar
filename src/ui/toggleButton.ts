@@ -19,6 +19,7 @@ import {
 } from "./playbarControls"
 import { registerShuffleSimilarUiSync, shuffleSimilarStatus } from "./shuffleSimilarUiState"
 import {
+  formatPublicErrorDetail,
   mapSimilarMixError,
   mountSimilarMixStatus,
   type SimilarMixPublicError,
@@ -381,9 +382,10 @@ const schedulePlacementWatch = () => {
 
 const notifyPublicError = (error: unknown, remainsActive = false): SimilarMixPublicError => {
   const publicError = mapSimilarMixError(error)
+  const detail = formatPublicErrorDetail(publicError)
   const message = remainsActive
-    ? `Similar Mix is still on. ${publicError.message}`
-    : `${publicError.title}. ${publicError.message}`
+    ? `Similar Mix is still on. ${detail}`
+    : `${publicError.title}. ${detail}`
   Spicetify.showNotification(message, !remainsActive)
   return publicError
 }

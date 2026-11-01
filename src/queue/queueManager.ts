@@ -1,4 +1,5 @@
 import { fisherYatesShuffle } from "../algorithm/shuffle"
+import { createQueueError } from "../diagnostics/failureReasons"
 import { recordOperation } from "../diagnostics/operationLog"
 import type { TrackCandidate } from "../session/types"
 import {
@@ -37,6 +38,7 @@ export const QUEUE_TIMING = {
 
 export class QueueOperationTimeoutError extends Error {
   readonly code = "SERVICE_UNAVAILABLE"
+  readonly reason = "queue_timeout"
 
   constructor(operation: string) {
     super(`Spotify did not finish ${operation} in time`)
@@ -294,7 +296,7 @@ export const replaceQueue = async (
   if (tracks.length === 0) return
 
   if (!(await clearQueueSafe())) {
-    throw new Error("Spotify could not clear the upcoming queue")
+    throw createQueueError("Spotify could not clear the upcoming queue", "queue_clear_failed")
   }
   await addTracksSafe(tracks)
 }
@@ -465,7 +467,8 @@ export const replaceUpcomingQueue = async (
   const previousUris = getUpcomingQueueUris().filter((uri) => uri.startsWith("spotify:track:"))
 
   if (tracks.length === 0) {
-    if (!(await clearQueueSafe())) throw new Error("Spotify could not clear the upcoming queue")
+    if (!(await clearQueueSafe()))
+      throw createQueueError("Spotify could not clear the upcoming queue", "queue_clear_failed")
     const commit = await waitForQueueConvergence([])
     if (!commit.verified && previousUris.length > 0) {
       await addTracksSafe(previousUris)
@@ -477,7 +480,7 @@ export const replaceUpcomingQueue = async (
   // private setQueue path is version-sensitive and accepts internal records
   // that can appear in the queue while still failing to play.
   if (!(await clearQueueSafe())) {
-    throw new Error("Spotify could not replace the upcoming queue")
+    throw createQueueError("Spotify could not replace the upcoming queue", "queue_replace_failed")
   }
   try {
     await addTracksSafe(tracks)
@@ -491,7 +494,10 @@ export const replaceUpcomingQueue = async (
   const commit = await waitForQueueConvergence(tracks)
   if (!commit.verified) {
     if (!(await clearQueueSafe())) {
-      throw new Error("Spotify could not roll back an unconfirmed queue update")
+      throw createQueueError(
+        "Spotify could not roll back an unconfirmed queue update",
+        "queue_replace_failed"
+      )
     }
     if (previousUris.length > 0) await addTracksSafe(previousUris)
   }
@@ -513,7 +519,8 @@ export const replaceUpcomingQueueForNewMix = async (
   let lastCommit: QueueCommit = { requestedUris: tracks, actualUris: [], verified: false }
   for (let attempt = 0; attempt < 2; attempt += 1) {
     await detachFromPlaylistContext(albumUri)
-    if (!(await clearQueueSafe())) throw new Error("Spotify could not replace the upcoming queue")
+    if (!(await clearQueueSafe()))
+      throw createQueueError("Spotify could not replace the upcoming queue", "queue_replace_failed")
     try {
       await addTracksSafe(tracks)
     } catch (error) {
@@ -538,7 +545,10 @@ export const replaceUpcomingQueueForNewMix = async (
   }
 
   if (!(await clearQueueSafe())) {
-    throw new Error("Spotify could not roll back an unconfirmed fresh queue")
+    throw createQueueError(
+      "Spotify could not roll back an unconfirmed fresh queue",
+      "queue_replace_failed"
+    )
   }
   if (previousUris.length > 0) await addTracksSafe(previousUris)
   return lastCommit

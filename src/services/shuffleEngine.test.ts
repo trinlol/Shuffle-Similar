@@ -370,7 +370,9 @@ describe("operation log", () => {
       verified: false,
     }))
 
-    await expect(reshuffleFromCurrentTrack()).rejects.toThrow("did not confirm")
+    await expect(reshuffleFromCurrentTrack()).rejects.toMatchObject({
+      reason: "queue_not_confirmed",
+    })
 
     expect(ops()).toContainEqual(
       expect.objectContaining({ op: "mix.start", outcome: "failed", reason: "queue_not_confirmed" })

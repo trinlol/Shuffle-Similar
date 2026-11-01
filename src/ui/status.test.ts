@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest"
+import { createQueueError } from "../diagnostics/failureReasons"
 import {
   createSimilarMixStatus,
+  formatPublicErrorDetail,
   mapSimilarMixError,
   mountSimilarMixStatus,
   SIMILAR_MIX_STATUS_COPY,
@@ -203,5 +205,45 @@ describe("Similar Mix status capsule", () => {
     expect(mountSimilarMixStatus(controller, { document: null })).toBeNull()
     expect(updateSimilarMixStatus(null)).toBe(false)
     expect(() => unmountSimilarMixStatus(null)).not.toThrow()
+  })
+})
+
+describe("error reference codes", () => {
+  it("copies an allow-listed reason into ref", () => {
+    const error = createQueueError("Spotify did not confirm the queue", "queue_not_confirmed")
+
+    expect(mapSimilarMixError(error)).toEqual(
+      expect.objectContaining({ code: "service_unavailable", ref: "queue_not_confirmed" })
+    )
+  })
+
+  it("drops unknown or non-string reasons", () => {
+    expect(
+      mapSimilarMixError({ code: "SERVICE_UNAVAILABLE", reason: "made_up" }).ref
+    ).toBeUndefined()
+    expect(mapSimilarMixError({ code: "SERVICE_UNAVAILABLE", reason: 42 }).ref).toBeUndefined()
+    expect(mapSimilarMixError(new Error("plain")).ref).toBeUndefined()
+  })
+
+  it("survives a throwing reason getter", () => {
+    const hostile = {
+      code: "SERVICE_UNAVAILABLE",
+      get reason(): string {
+        throw new Error("boom")
+      },
+    }
+
+    expect(mapSimilarMixError(hostile)).toEqual(
+      expect.objectContaining({ code: "service_unavailable" })
+    )
+    expect(mapSimilarMixError(hostile).ref).toBeUndefined()
+  })
+
+  it("capsule detail and notification text end with (ref: <reason>) when present", () => {
+    const withRef = mapSimilarMixError(createQueueError("x", "queue_clear_failed"))
+    const withoutRef = mapSimilarMixError(new Error("x"))
+
+    expect(formatPublicErrorDetail(withRef)).toBe(`${withRef.message} (ref: queue_clear_failed)`)
+    expect(formatPublicErrorDetail(withoutRef)).toBe(withoutRef.message)
   })
 })

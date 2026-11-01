@@ -1,3 +1,5 @@
+import { isQueueFailureReason } from "../diagnostics/failureReasons"
+
 export type SimilarMixStatus =
   | "off"
   | "building"
@@ -82,6 +84,8 @@ export interface SimilarMixPublicError {
   readonly message: string
   readonly retryable: boolean
   readonly recovery: SimilarMixErrorRecovery
+  /** Allow-listed reference code that helps diagnose the failure. */
+  readonly ref?: string
 }
 
 const publicError = (
@@ -189,8 +193,20 @@ const ERROR_CODE_HINTS: Readonly<Record<string, SimilarMixErrorCode>> = Object.f
   QUOTA_EXCEEDED: "storage_unavailable",
 })
 
+/** The error message plus its reference code, as shown to the listener. */
+export const formatPublicErrorDetail = (error: SimilarMixPublicError): string =>
+  error.ref ? `${error.message} (ref: ${error.ref})` : error.message
+
+const withReference = (copy: SimilarMixPublicError, error: unknown): SimilarMixPublicError => {
+  const reason = readErrorHint(error, "reason")
+  return isQueueFailureReason(reason) ? Object.freeze({ ...copy, ref: reason }) : copy
+}
+
 /** Converts opaque failures into an allow-listed, display-safe public error. */
-export const mapSimilarMixError = (error: unknown): SimilarMixPublicError => {
+export const mapSimilarMixError = (error: unknown): SimilarMixPublicError =>
+  withReference(mapSimilarMixErrorCode(error), error)
+
+const mapSimilarMixErrorCode = (error: unknown): SimilarMixPublicError => {
   const statusHint = readErrorHint(error, "status") ?? readErrorHint(error, "statusCode")
   const status =
     typeof statusHint === "number" && Number.isFinite(statusHint) ? statusHint : undefined
@@ -244,7 +260,10 @@ const hasSameVisibleState = (
   current: SimilarMixStatusSnapshot,
   state: SimilarMixStatus,
   error?: SimilarMixPublicError
-): boolean => current.state === state && current.error?.code === error?.code
+): boolean =>
+  current.state === state &&
+  current.error?.code === error?.code &&
+  current.error?.ref === error?.ref
 
 export const createSimilarMixStatus = (
   options: SimilarMixStatusControllerOptions = {}
@@ -514,7 +533,7 @@ export const mountSimilarMixStatus = (
     element.dataset.tone = copy.tone
     element.setAttribute("aria-busy", copy.busy ? "true" : "false")
     label.textContent = state === "error" && error ? error.title : copy.label
-    detail.textContent = error ? error.message : copy.detail
+    detail.textContent = error ? formatPublicErrorDetail(error) : copy.detail
     return true
   }
 
