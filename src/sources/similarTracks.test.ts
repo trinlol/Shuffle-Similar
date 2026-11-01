@@ -11,6 +11,12 @@ import {
   searchTracks,
 } from "./similarTracks"
 
+const mustFind = <T>(items: readonly T[], predicate: (item: T) => boolean): T => {
+  const found = items.find(predicate)
+  if (found === undefined) throw new Error("expected a matching item")
+  return found
+}
+
 const seed: SeedMetadata = {
   uri: "spotify:track:seed",
   trackId: "seed",
@@ -194,7 +200,7 @@ describe("restricted Spotify source compatibility", () => {
     expect(second.length).toBeGreaterThan(0)
     expect(optionalCalls).toEqual({ recommendations: 1, related: 1, features: 1 })
     expect(
-      getSourceProvenance(first.find((track) => track.uri === "spotify:track:radio")!)
+      getSourceProvenance(mustFind(first, (track) => track.uri === "spotify:track:radio"))
     ).toContain("radio")
     expect(
       getSpotifySourceDiagnostics().capabilities.map(({ capability, status }) => ({

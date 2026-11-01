@@ -1,7 +1,7 @@
 import { sortByObscurity } from "../algorithm/filters"
 import { pickRandom } from "../algorithm/shuffle"
 import type { SeedMetadata, TrackCandidate } from "../session/types"
-import { isWebApiTrackPlayable } from "../utils/playability"
+import { isWebApiTrackPlayable, type WebApiTrack } from "../utils/playability"
 import { getUriId } from "../utils/uri"
 import { attachSourceProvenance, mergeCandidatesWithProvenance } from "./provenance"
 import { runWithTimeout } from "./spotifyApiAdapter"
@@ -147,6 +147,13 @@ type PlaylistEntry = {
   name: string
 }
 
+/** Recently-played tracks carry artist and popularity fields beyond WebApiTrack. */
+type RecentTrackFields = {
+  uri: string
+  artists?: Array<{ uri?: string; name?: string }>
+  popularity?: number
+}
+
 export const fetchRecentlyPlayedTracks = async (): Promise<TrackCandidate[]> => {
   try {
     const response = await runWithTimeout(
@@ -155,9 +162,14 @@ export const fetchRecentlyPlayedTracks = async (): Promise<TrackCandidate[]> => 
       PROFILE_SOURCE_TIMEOUT_MS
     )
     return (response?.items ?? [])
-      .map((item: any) => item?.track)
-      .filter((track: any) => track?.uri && isWebApiTrackPlayable(track))
-      .map((track: any) =>
+      .map((item: { track?: WebApiTrack & RecentTrackFields }) => item?.track)
+      .filter(
+        (
+          track: (WebApiTrack & RecentTrackFields) | undefined
+        ): track is WebApiTrack & RecentTrackFields =>
+          Boolean(track?.uri) && isWebApiTrackPlayable(track)
+      )
+      .map((track: WebApiTrack & RecentTrackFields) =>
         attachSourceProvenance(
           {
             uri: track.uri,
@@ -213,7 +225,7 @@ const fetchPlaylistTracks = async (playlistUri: string): Promise<TrackCandidate[
   return (res.items ?? [])
     .filter(
       (item: { uri: string; isPlayable?: boolean }) =>
-        item.uri && item.uri.startsWith("spotify:track:") && item.isPlayable !== false
+        item.uri?.startsWith("spotify:track:") && item.isPlayable !== false
     )
     .map((item: { uri: string; metadata?: Record<string, string> }) =>
       candidateFromUri(item.uri, item.metadata, "profile-playlist")
@@ -243,7 +255,7 @@ export const fetchAllPlaylistTracks = async (playlistUri: string): Promise<Track
       const tracks = items
         .filter(
           (item: { uri: string; isPlayable?: boolean }) =>
-            item.uri && item.uri.startsWith("spotify:track:") && item.isPlayable !== false
+            item.uri?.startsWith("spotify:track:") && item.isPlayable !== false
         )
         .map((item: { uri: string; metadata?: Record<string, string> }) =>
           candidateFromUri(item.uri, item.metadata, "profile-playlist")

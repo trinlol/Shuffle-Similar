@@ -1,4 +1,4 @@
-type WebApiTrack = {
+export type WebApiTrack = {
   id?: string
   uri?: string
   is_playable?: boolean

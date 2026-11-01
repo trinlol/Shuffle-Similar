@@ -118,7 +118,8 @@ export class SourcePipeline {
 
   private releaseCapacity(): void {
     while (this.capacityWaiters.length > 0) {
-      const next = this.capacityWaiters.shift()!
+      const next = this.capacityWaiters.shift()
+      if (!next) return
       if (next.signal.aborted) continue
       next.resolve(true)
       return

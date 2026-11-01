@@ -270,7 +270,7 @@ const fetchPlaylistCandidates = async (
     return (res.items ?? [])
       .filter(
         (item: { uri: string; isPlayable?: boolean }) =>
-          item.uri && item.uri.startsWith("spotify:track:") && item.isPlayable !== false
+          item.uri?.startsWith("spotify:track:") && item.isPlayable !== false
       )
       .map((item: { uri: string; metadata?: Record<string, string> }) =>
         candidateFromUri(item.uri, item.metadata, sourceId)

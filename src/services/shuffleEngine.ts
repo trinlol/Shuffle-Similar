@@ -3,7 +3,6 @@ import {
   buildSinglePoolBatch,
   buildTrackBatch,
 } from "../algorithm/progressiveBlend"
-import { fisherYatesShuffle } from "../algorithm/shuffle"
 import { createQueueError } from "../diagnostics/failureReasons"
 import { recordOperation } from "../diagnostics/operationLog"
 import {
@@ -41,7 +40,6 @@ import {
 import { fetchSeedMetadata } from "../sources/trackMetadata"
 import { getSmartConfig } from "../storage/settings"
 import { filterPlayableUris, verifyQueuePlayability } from "../utils/playability"
-import { getUriId } from "../utils/uri"
 import { assertQueueCompatibility } from "./compatibility"
 import { LatestMixCoordinator } from "./mixCoordinator"
 import { suppressNativeShuffle } from "./playbackEffects"
@@ -186,7 +184,8 @@ const buildArtistPlayableBatch = async (excludeUpcoming = true) => {
     throw new Error("Artist has no tracks.")
   }
 
-  const seed = sessionManager.getSeed()!
+  const seed = sessionManager.getSeed()
+  if (!seed) throw new Error("Artist mix has no seed track.")
   const settings = getSessionConfig(seed)
   const playedUris = sessionManager.getPlayedUris()
   const queuedUris = sessionManager.getQueuedUris()
@@ -516,15 +515,15 @@ const prepareMix = async (seed: SeedMetadata, contextUri?: string | null): Promi
 }
 
 const commitPreparedSession = (prepared: PreparedMix): void => {
-  if (prepared.mode === "playlist" || prepared.mode === "album") {
+  if ((prepared.mode === "playlist" || prepared.mode === "album") && prepared.contextUri) {
     sessionManager.startPlaylistSession(
       prepared.seed,
-      prepared.contextUri!,
+      prepared.contextUri,
       prepared.playlistTracks,
       prepared.topTracks
     )
-  } else if (prepared.mode === "artist") {
-    sessionManager.startArtistSession(prepared.seed, prepared.contextUri!, prepared.artistTracks)
+  } else if (prepared.mode === "artist" && prepared.contextUri) {
+    sessionManager.startArtistSession(prepared.seed, prepared.contextUri, prepared.artistTracks)
   } else {
     sessionManager.startSession(prepared.seed)
   }
@@ -557,10 +556,10 @@ export const startShuffleSimilar = async (
     seed,
     queueUris: prepared.queueUris,
   }
-  if (options.buildOnly) return result
+  if (options.buildOnly || generation == null) return result
 
   const startedAt = Date.now()
-  await liveMixCoordinator.commit(generation!, async () => {
+  await liveMixCoordinator.commit(generation, async () => {
     invalidatePrefetch()
     sessionManager.invalidatePendingMutations()
     const currentUri = Spicetify.Player.data?.item?.uri ?? null

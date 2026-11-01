@@ -8,6 +8,16 @@ const SOURCE_TIMEOUT_MS = 6_000
 const MAX_DISCOGRAPHY_ALBUMS = 12
 const ALBUM_CONCURRENCY = 3
 
+/** The fields read from a GraphQL album track item. */
+type AlbumTrackItem = {
+  track?: {
+    uri?: string
+    playability?: { playable?: boolean }
+    artists?: { items?: Array<{ uri?: string; profile?: { name?: string } }> }
+    popularity?: number
+  }
+}
+
 const parseYear = (value: unknown): number | undefined => {
   if (typeof value === "number" && Number.isFinite(value)) return value
   if (typeof value === "string") {
@@ -35,7 +45,7 @@ export const fetchAlbumTracks = async (albumUri: string): Promise<TrackCandidate
     const releaseYear = parseYear(album?.date?.isoString ?? album?.date?.year)
 
     return items
-      .map((item: any) => {
+      .map((item: AlbumTrackItem) => {
         const track = item?.track
         if (!track?.uri || track.playability?.playable === false) return null
         return attachSourceProvenance(
@@ -51,7 +61,7 @@ export const fetchAlbumTracks = async (albumUri: string): Promise<TrackCandidate
           "album-graphql"
         )
       })
-      .filter((candidate: any): candidate is TrackCandidate => Boolean(candidate))
+      .filter((candidate: TrackCandidate | null): candidate is TrackCandidate => candidate !== null)
   } catch {
     return []
   }

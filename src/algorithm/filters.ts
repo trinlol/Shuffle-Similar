@@ -189,10 +189,10 @@ export const acousticDistance = (a: AcousticProfile, b: AcousticProfile): number
     [a.instrumentalness, b.instrumentalness],
   ]
   const deltas = pairs
-    .filter(([left, right]) => left != null && right != null)
+    .filter((pair): pair is [number, number, boolean?] => pair[0] != null && pair[1] != null)
     .map(([left, right, tempo]) => {
-      const normalizedLeft = tempo ? normalizeTempo(left!) : left!
-      const normalizedRight = tempo ? normalizeTempo(right!) : right!
+      const normalizedLeft = tempo ? normalizeTempo(left) : left
+      const normalizedRight = tempo ? normalizeTempo(right) : right
       return (normalizedLeft - normalizedRight) ** 2
     })
   return deltas.length >= 2

@@ -432,8 +432,9 @@ export const sessionManager = {
           ? {
               candidate: previousCandidate,
               extensionOwned:
-                sessionManager.ownsQueueTrack(previousUri!) ||
-                state.quarantinedUris.has(previousUri!),
+                previousUri != null &&
+                (sessionManager.ownsQueueTrack(previousUri) ||
+                  state.quarantinedUris.has(previousUri)),
               progressMs: state.seekDetected ? null : state.currentProgressMs,
               durationMs: state.seekDetected ? null : state.currentDurationMs,
               context: {

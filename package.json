@@ -14,7 +14,7 @@
     "check:bundle": "node scripts/check-release-bundle.mjs",
     "watch": "node esbuild.config.mjs --watch",
     "typecheck": "tsc --noEmit",
-    "lint": "biome check .",
+    "lint": "biome check --error-on-warnings .",
     "lint:fix": "biome check --write .",
     "format": "biome format --write .",
     "test": "vitest run",

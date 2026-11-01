@@ -7,6 +7,12 @@ import {
   rankCandidatesV2,
 } from "./rankingV2"
 
+const mustGet = <K, V>(map: Map<K, V>, key: K): V => {
+  const value = map.get(key)
+  if (value === undefined) throw new Error(`missing ${String(key)}`)
+  return value
+}
+
 const familyCandidates = (family: BlendFamily, count: number): RankableCandidate[] =>
   Array.from({ length: count }, (_, index) => ({
     uri: `spotify:track:${family}-${index}`,
@@ -169,11 +175,11 @@ describe("rankCandidatesV2", () => {
       }).map((candidate) => [candidate.uri, candidate])
     )
 
-    expect(after.get("spotify:track:skip-neighbor")!.score).toBeLessThan(
-      before.get("spotify:track:skip-neighbor")!.score
-    )
-    expect(after.get("spotify:track:skip-neighbor")!.score).toBeGreaterThan(0)
-    expect(after.get("spotify:track:skip-neighbor")!.reasonCodes).toContain("rank:skip-penalized")
+    const neighborAfter = mustGet(after, "spotify:track:skip-neighbor")
+    const neighborBefore = mustGet(before, "spotify:track:skip-neighbor")
+    expect(neighborAfter.score).toBeLessThan(neighborBefore.score)
+    expect(neighborAfter.score).toBeGreaterThan(0)
+    expect(neighborAfter.reasonCodes).toContain("rank:skip-penalized")
   })
 })
 
