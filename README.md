@@ -36,11 +36,11 @@ spicetify config extensions shuffle-similar.js
 spicetify apply
 ```
 
-| Platform | Extensions folder |
-| --- | --- |
-| Windows | `%appdata%\spicetify\Extensions\` |
-| Linux | `~/.config/spicetify/Extensions/` |
-| macOS | `~/spicetify_data/Extensions/` |
+| Platform | Extensions folder                 |
+| -------- | --------------------------------- |
+| Windows  | `%appdata%\spicetify\Extensions\` |
+| Linux    | `~/.config/spicetify/Extensions/` |
+| macOS    | `~/spicetify_data/Extensions/`    |
 
 ## Use it
 

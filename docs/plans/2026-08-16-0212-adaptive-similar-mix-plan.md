@@ -1,4 +1,5 @@
 ---
+
 title: Adaptive Similar Mix - Plan
 type: feat
 date: 2026-08-16
@@ -268,17 +269,17 @@ flowchart LR
 
 ## Verification Contract
 
-| Gate | Command or action | Units | Done signal |
-|---|---|---|---|
-| Focused unit tests | `npx vitest run <affected-test-files>` | U1-U5 | Every changed contract has deterministic positive, negative, and race coverage. |
-| Full test suite | `npm test` | U1-U6 | All tests pass with no unhandled async work. |
-| Static types | `npm run typecheck` | U1-U6 | TypeScript exits successfully. |
-| Installed extension build | `npm run build` | U6 | The configured Spicetify extension output is rebuilt successfully. |
-| Local application | `spicetify apply` | U6 | Spicetify applies the rebuilt extension without error. |
-| Live fresh takeover | Start from playlist, artist, album, and track with an old queue | U2, U6 | The old queue does not reappear and only the newest mix owns the queue. |
-| Live failure calibration | Exercise reproducible unavailable-track, intentional-pause, and buffering paths with watchdog traces | U3, U6 | Activation thresholds distinguish all three paths; otherwise the watchdog remains observation-only and the release does not claim active self-healing. |
-| Discovery evaluation | `npm test -- src/evaluation/recommendationQuality.test.ts` | U5, U6 | Every eligible ten-track window meets 4 discovery-eligible tracks or records a justified relaxation. |
-| Release validation | Repository release workflow and GitHub checks | U6 | Version, changelog, tag, pushed commit, and release artifact agree; CI is green. |
+| Gate                      | Command or action                                                                                    | Units  | Done signal                                                                                                                                            |
+| ------------------------- | ---------------------------------------------------------------------------------------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Focused unit tests        | `npx vitest run <affected-test-files>`                                                               | U1-U5  | Every changed contract has deterministic positive, negative, and race coverage.                                                                        |
+| Full test suite           | `npm test`                                                                                           | U1-U6  | All tests pass with no unhandled async work.                                                                                                           |
+| Static types              | `npm run typecheck`                                                                                  | U1-U6  | TypeScript exits successfully.                                                                                                                         |
+| Installed extension build | `npm run build`                                                                                      | U6     | The configured Spicetify extension output is rebuilt successfully.                                                                                     |
+| Local application         | `spicetify apply`                                                                                    | U6     | Spicetify applies the rebuilt extension without error.                                                                                                 |
+| Live fresh takeover       | Start from playlist, artist, album, and track with an old queue                                      | U2, U6 | The old queue does not reappear and only the newest mix owns the queue.                                                                                |
+| Live failure calibration  | Exercise reproducible unavailable-track, intentional-pause, and buffering paths with watchdog traces | U3, U6 | Activation thresholds distinguish all three paths; otherwise the watchdog remains observation-only and the release does not claim active self-healing. |
+| Discovery evaluation      | `npm test -- src/evaluation/recommendationQuality.test.ts`                                           | U5, U6 | Every eligible ten-track window meets 4 discovery-eligible tracks or records a justified relaxation.                                                   |
+| Release validation        | Repository release workflow and GitHub checks                                                        | U6     | Version, changelog, tag, pushed commit, and release artifact agree; CI is green.                                                                       |
 
 ---
 
