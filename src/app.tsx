@@ -1,3 +1,4 @@
+import { buildDiagnosticsReport, registerDiagnosticsState } from "./diagnostics/operationLog"
 import { PlaybackFailureWatchdog } from "./feedback/playbackFailureWatchdog"
 import { registerNativeShuffleSuppressor } from "./services/playbackEffects"
 import {
@@ -33,6 +34,14 @@ function bootExtension() {
 
   // Lets the service layer suppress native shuffle without importing the DOM-bound UI.
   registerNativeShuffleSuppressor(enforceNativeShuffleOff)
+
+  registerDiagnosticsState(() => ({
+    toggleEnabled: sessionManager.isToggleEnabled(),
+    sessionActive: sessionManager.isActive(),
+  }))
+  // Console access for bug reports: copy(__shuffleSimilarDiagnostics())
+  ;(globalThis as { __shuffleSimilarDiagnostics?: () => string }).__shuffleSimilarDiagnostics =
+    buildDiagnosticsReport
 
   const PLAYBAR_INIT_DELAY_MS = 4000
 

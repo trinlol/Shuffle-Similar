@@ -1,3 +1,4 @@
+import { copyDiagnostics } from "../diagnostics/copyDiagnostics"
 import { isPlaylistContext, isValidPlaybackContext } from "../queue/queueManager"
 import { explainSimilarMixTrack } from "../services/explainability"
 import { createSimilarPlaylist } from "../services/playlistService"
@@ -214,6 +215,13 @@ export const registerContextMenu = () => {
   ).register()
 
   new Spicetify.ContextMenu.Item("Why this track?", showTrackExplanation, isSingleTrack).register()
+
+  new Spicetify.ContextMenu.Item(
+    "Copy Similar Mix diagnostics",
+    () => void copyDiagnostics(),
+    () => true,
+    "copy"
+  ).register()
 
   contextMenuRegistered = true
   console.info("[Shuffle Similar] Context menus registered")
