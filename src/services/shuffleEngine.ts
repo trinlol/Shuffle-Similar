@@ -4,6 +4,7 @@ import {
   buildTrackBatch,
 } from "../algorithm/progressiveBlend"
 import { fisherYatesShuffle } from "../algorithm/shuffle"
+import { recordOperation } from "../diagnostics/operationLog"
 import {
   detectForeignInjection,
   disableAutoplayGuard,
@@ -557,6 +558,7 @@ export const startShuffleSimilar = async (
   }
   if (options.buildOnly) return result
 
+  const startedAt = Date.now()
   await liveMixCoordinator.commit(generation!, async () => {
     invalidatePrefetch()
     sessionManager.invalidatePendingMutations()
@@ -573,6 +575,16 @@ export const startShuffleSimilar = async (
           : await replaceUpcomingQueue(currentUri ?? seed.uri, prepared.queueUris)
     )
     if (!queueCommit.verified) {
+      recordOperation({
+        op: "mix.start",
+        outcome: "failed",
+        durationMs: Date.now() - startedAt,
+        counts: {
+          requested: queueCommit.requestedUris.length,
+          observed: queueCommit.actualUris.length,
+        },
+        reason: "queue_not_confirmed",
+      })
       const prefixStatus = queuePrefixMatches(queueCommit.requestedUris, queueCommit.actualUris)
         ? "ordered prefix matched"
         : "ordered prefix differed"
@@ -590,6 +602,12 @@ export const startShuffleSimilar = async (
     suppressNativeShuffle()
   })
 
+  recordOperation({
+    op: "mix.start",
+    outcome: "ok",
+    durationMs: Date.now() - startedAt,
+    counts: { queued: prepared.queueUris.length },
+  })
   Spicetify.showNotification(`Similar Mix ready · ${prepared.queueUris.length} tracks queued`)
 
   return result
@@ -640,6 +658,11 @@ const runRefillQueueIfNeeded = async (): Promise<void> => {
     const revision = sessionManager.getRevision()
     const foreign = detectForeignInjection()
     if (foreign.length > 0) {
+      recordOperation({
+        op: "guard.foreign_cleanup",
+        outcome: "info",
+        counts: { foreign: foreign.length },
+      })
       const cleaned = getUpcomingQueueUris().filter((uri) => sessionManager.ownsQueueTrack(uri))
       const current = Spicetify.Player.data?.item?.uri
       await queueMutationCoordinator.run(() => replaceUpcomingQueue(current, cleaned))
@@ -665,6 +688,7 @@ const runRefillQueueIfNeeded = async (): Promise<void> => {
       await appendTracksToQueue(batchUris.map((uri) => ({ uri })))
     })
     if (!sessionManager.isActive() || sessionManager.getRevision() !== revision) return
+    recordOperation({ op: "refill.append", outcome: "ok", counts: { tracks: batchUris.length } })
     // Spotify may append context/autoplay entries after the owned prefix.
     // Keep those visible for playback, but never count or adopt them as ours.
     const merged = [...ownedUpcoming, ...batchUris]
@@ -672,6 +696,7 @@ const runRefillQueueIfNeeded = async (): Promise<void> => {
     syncKnownQueue(merged)
     persistActiveSession()
   } catch (error) {
+    recordOperation({ op: "refill.append", outcome: "failed", reason: "refill_failed" })
     console.error("[Shuffle Similar] refill failed", error)
   } finally {
     sessionManager.setRefilling(false)
@@ -744,15 +769,22 @@ export const handlePlaybackFailure = async (uri: string): Promise<boolean> => {
       if (Spicetify.Player.data?.item?.uri !== uri) return true
       nextOwnedUri = getImmediateOwnedRecoveryTrack()
       if (!nextOwnedUri) {
+        recordOperation({
+          op: "recovery.play_failure",
+          outcome: "failed",
+          reason: "recovery_no_replacement",
+        })
         Spicetify.showNotification("Similar Mix could not recover this unavailable track", true)
         return false
       }
+      recordOperation({ op: "recovery.play_failure", outcome: "ok" })
       Spicetify.Player.next()
       void rerankUpcomingAfterFeedback().catch((error) => {
         console.warn("[Shuffle Similar] Could not refresh the queue after playback recovery", error)
       })
       return true
     } catch (error) {
+      recordOperation({ op: "recovery.play_failure", outcome: "failed", reason: "recovery_failed" })
       console.warn("[Shuffle Similar] Could not recover failed playback", error)
       Spicetify.showNotification("Similar Mix could not recover this unavailable track", true)
       return false

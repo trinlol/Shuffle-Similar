@@ -89,8 +89,14 @@ vi.mock("../queue/queueManager", () => ({
   queuePrefixMatches: () => true,
 }))
 
+import { clearOperations, getOperations } from "../diagnostics/operationLog"
 import { sessionManager } from "../session/SessionManager"
-import { handlePlaybackFailure, handleSongChange, refillQueueIfNeeded } from "./shuffleEngine"
+import {
+  handlePlaybackFailure,
+  handleSongChange,
+  refillQueueIfNeeded,
+  reshuffleFromCurrentTrack,
+} from "./shuffleEngine"
 
 const localStorage = new Map<string, string>()
 const playerNext = vi.fn()
@@ -125,6 +131,7 @@ beforeEach(() => {
   replaceUpcoming.mockClear()
   playerNext.mockClear()
   showNotification.mockClear()
+  clearOperations()
   setNowPlaying(seed.uri)
 })
 
@@ -287,6 +294,86 @@ describe("handlePlaybackFailure", () => {
     expect(showNotification).toHaveBeenCalledWith(
       "Similar Mix could not recover this unavailable track",
       true
+    )
+  })
+})
+
+describe("operation log", () => {
+  const ops = () =>
+    getOperations().map(({ op, outcome, reason, counts }) => ({ op, outcome, reason, counts }))
+
+  it("records a refill append with its track count", async () => {
+    const remaining = candidate("last")
+    sessionManager.startSession(seed)
+    sessionManager.setToggleEnabled(true)
+    sessionManager.registerCandidates([remaining])
+    sessionManager.setQueuedUris([remaining.uri])
+    upcomingQueueUris = [remaining.uri]
+    plannedBatch = [candidate("fresh-a"), candidate("fresh-b")]
+
+    await refillQueueIfNeeded()
+
+    expect(ops()).toContainEqual(
+      expect.objectContaining({ op: "refill.append", outcome: "ok", counts: { tracks: 2 } })
+    )
+  })
+
+  it("records a recovered playback failure", async () => {
+    const [failing, next] = [candidate("failing"), candidate("next")]
+    sessionManager.startSession(seed)
+    sessionManager.setToggleEnabled(true)
+    sessionManager.registerCandidates([failing, next])
+    sessionManager.setQueuedUris([failing.uri, next.uri])
+    upcomingQueueUris = [next.uri]
+    setNowPlaying(failing.uri)
+
+    await handlePlaybackFailure(failing.uri)
+
+    expect(ops()).toContainEqual(
+      expect.objectContaining({ op: "recovery.play_failure", outcome: "ok" })
+    )
+  })
+
+  it("records a playback failure with no owned replacement", async () => {
+    const failing = candidate("failing")
+    sessionManager.startSession(seed)
+    sessionManager.setToggleEnabled(true)
+    sessionManager.registerCandidates([failing])
+    sessionManager.setQueuedUris([failing.uri])
+    setNowPlaying(failing.uri)
+
+    await handlePlaybackFailure(failing.uri)
+
+    expect(ops()).toContainEqual(
+      expect.objectContaining({
+        op: "recovery.play_failure",
+        outcome: "failed",
+        reason: "recovery_no_replacement",
+      })
+    )
+  })
+
+  it("records a mix start that Spotify does not confirm", async () => {
+    setNowPlaying(seed.uri)
+    const runtime = (globalThis as unknown as { Spicetify: Record<string, unknown> }).Spicetify
+    runtime.Platform = {
+      PlayerAPI: {
+        clearQueue: async () => undefined,
+        addToQueue: async () => undefined,
+        play: async () => undefined,
+      },
+    }
+    plannedBatch = [candidate("mix-a"), candidate("mix-b")]
+    replaceUpcoming.mockImplementationOnce(async (_current, uris) => ({
+      requestedUris: uris,
+      actualUris: [],
+      verified: false,
+    }))
+
+    await expect(reshuffleFromCurrentTrack()).rejects.toThrow("did not confirm")
+
+    expect(ops()).toContainEqual(
+      expect.objectContaining({ op: "mix.start", outcome: "failed", reason: "queue_not_confirmed" })
     )
   })
 })

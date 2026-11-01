@@ -1,4 +1,5 @@
 import { fisherYatesShuffle } from "../algorithm/shuffle"
+import { recordOperation } from "../diagnostics/operationLog"
 import type { TrackCandidate } from "../session/types"
 import {
   type QueueSnapshot,
@@ -201,6 +202,8 @@ const waitForQueueClearToSettle = async (): Promise<boolean> =>
   ).met
 
 const clearQueueSafe = async (): Promise<boolean> => {
+  const startedAt = Date.now()
+  const queuedBefore = queuedUris().length
   try {
     const clear = () =>
       runQueueOperationWithTimeout(
@@ -212,20 +215,42 @@ const clearQueueSafe = async (): Promise<boolean> => {
     // Settling is advisory. Spotify accepted the clear, so a snapshot that
     // lags or never updates must not turn it into a failure; the add and the
     // convergence check that follow still verify the real outcome.
-    if (!(await waitForQueueClearToSettle())) {
-      console.warn(
-        "[Shuffle Similar] Queue still showed manually queued tracks after clear; retrying once"
-      )
-      await clear()
-      if (!(await waitForQueueClearToSettle())) {
-        console.warn(
-          "[Shuffle Similar] Queue snapshot did not reflect the clear; continuing to verification"
-        )
-      }
+    if (await waitForQueueClearToSettle()) {
+      recordOperation({
+        op: "queue.clear",
+        outcome: "ok",
+        durationMs: Date.now() - startedAt,
+        counts: { queuedBefore },
+      })
+      return true
     }
+    console.warn(
+      "[Shuffle Similar] Queue still showed manually queued tracks after clear; retrying once"
+    )
+    await clear()
+    const settled = await waitForQueueClearToSettle()
+    if (!settled) {
+      console.warn(
+        "[Shuffle Similar] Queue snapshot did not reflect the clear; continuing to verification"
+      )
+    }
+    recordOperation({
+      op: "queue.clear",
+      outcome: settled ? "retry" : "timeout",
+      durationMs: Date.now() - startedAt,
+      counts: { queuedBefore, queuedAfter: queuedUris().length },
+      reason: settled ? "queue_clear_retried" : "queue_clear_unsettled",
+    })
     return true
   } catch (error) {
-    if (error instanceof QueueOperationTimeoutError) throw error
+    const timedOut = error instanceof QueueOperationTimeoutError
+    recordOperation({
+      op: "queue.clear",
+      outcome: timedOut ? "timeout" : "failed",
+      durationMs: Date.now() - startedAt,
+      reason: timedOut ? "queue_timeout" : "queue_clear_failed",
+    })
+    if (timedOut) throw error
     return false
   }
 }
@@ -236,10 +261,29 @@ const addTracksSafe = async (uris: string[]) => {
   if (items.length === 0) return
 
   disableNativeShuffle()
-  await runQueueOperationWithTimeout(
-    () => Spicetify.Platform.PlayerAPI.addToQueue(items),
-    "the queue add"
-  )
+  const startedAt = Date.now()
+  try {
+    await runQueueOperationWithTimeout(
+      () => Spicetify.Platform.PlayerAPI.addToQueue(items),
+      "the queue add"
+    )
+    recordOperation({
+      op: "queue.add",
+      outcome: "ok",
+      durationMs: Date.now() - startedAt,
+      counts: { tracks: items.length },
+    })
+  } catch (error) {
+    const timedOut = error instanceof QueueOperationTimeoutError
+    recordOperation({
+      op: "queue.add",
+      outcome: timedOut ? "timeout" : "failed",
+      durationMs: Date.now() - startedAt,
+      counts: { tracks: items.length },
+      reason: timedOut ? "queue_timeout" : "queue_replace_failed",
+    })
+    throw error
+  }
 }
 
 export const replaceQueue = async (
@@ -391,9 +435,21 @@ const waitForQueueConvergence = async (
     return Date.now() - stableSince >= stableForMs
   }
 
+  const startedAt = Date.now()
   const { met } = await waitForQueue(converged, {
     timeoutMs: QUEUE_TIMING.convergenceTimeoutMs,
     pollMs: QUEUE_TIMING.convergencePollMs,
+  })
+  recordOperation({
+    op: "queue.verify",
+    outcome: met ? "ok" : "failed",
+    durationMs: Date.now() - startedAt,
+    counts: {
+      requested: requestedUris.length,
+      observed: actualUris.length,
+      strict: options.strict ? 1 : 0,
+    },
+    reason: met ? undefined : "queue_not_confirmed",
   })
   return { requestedUris, actualUris, verified: met }
 }

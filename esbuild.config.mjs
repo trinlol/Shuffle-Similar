@@ -27,6 +27,7 @@ const buildOptions = {
   jsxFactory: "Spicetify.React.createElement",
   jsxFragment: "Spicetify.React.Fragment",
   logLevel: "info",
+  define: { __SHUFFLE_SIMILAR_VERSION__: JSON.stringify(version) },
   banner: {
     js: [
       "// NAME: Shuffle Similar",
