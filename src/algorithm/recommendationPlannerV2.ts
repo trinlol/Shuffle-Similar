@@ -1,11 +1,26 @@
-import { getTasteProfileConfidence, scoreTasteAffinity } from "../profile/tasteProfile"
+import {
+  getTasteProfileConfidence,
+  scoreArtistHabitualPenalty,
+  scoreTasteAffinity,
+} from "../profile/tasteProfile"
 import type { SeedMetadata, TrackCandidate } from "../session/types"
 import { getSourceProvenance } from "../sources/provenance"
 import type { SmartConfig } from "../storage/settings"
 import {
+  expandSeedGenresFromGraph,
+  filterSoundtracksAndInstrumentals,
+  hasDisqualifyingTitleMismatch,
+  inferSeedGenres,
+  isSonicOutlier,
+  isSoundtrackSeed,
+  isVocalSeed,
+  scoreGenreCompatibility,
+} from "./genreAffinity"
+import {
   acousticDistanceV2,
   type BlendFamily,
   type CandidateProvenance,
+  canonicalKeysForTrack,
   planSlateV2,
   type RankableCandidate,
   rankCandidatesV2,
@@ -48,7 +63,12 @@ export type PlanRecommendationBatchV2Options = {
   pools: RecommendationCandidatePool[]
   referenceTracks?: TrackCandidate[]
   excludedUris?: readonly string[]
+  excludedCanonicalKeys?: readonly string[]
   queueTailUris?: readonly string[]
+  recentHistoryUris?: readonly string[]
+  habitualArtistKeys?: ReadonlySet<string>
+  recentArtistKeys?: readonly string[]
+  exposureMultipliers?: ReadonlyMap<string, number>
   topTrackUris?: ReadonlySet<string>
   familiarUris?: ReadonlySet<string>
   discoveryHistory?: readonly boolean[]
@@ -56,6 +76,8 @@ export type PlanRecommendationBatchV2Options = {
   count: number
   absoluteStartPosition?: number
   rngSeed?: string | number
+  explorationBand?: number
+  explorationTemperature?: number
 }
 
 const diagnosticsByBatch = new WeakMap<readonly TrackCandidate[], RecommendationDiagnostics>()
@@ -64,18 +86,32 @@ const SOURCE_RELIABILITY: Readonly<Record<string, number>> = Object.freeze({
   recommendations: 1,
   "inspired-by": 1.05,
   radio: 1,
-  "genre-era-search": 0.85,
+  "discovered-on": 0.95,
+  "playlist-recommendations": 0.95,
+  "related-artists": 0.92,
+  "genre-era-search": 0.82,
   "era-search": 0.65,
-  "related-artists": 0.9,
+  "fallback-search": 0.6,
   "album-peers": 0.65,
   "artist-discography": 0.9,
   "similar-discovery": 1,
-  "profile-library": 0.9,
+  "profile-library": 0.88,
+  "liked-tracks": 0.88,
+  "liked-tracks-collection": 0.88,
+  "profile-playlist": 0.85,
   "playlist-discovery": 1,
-  "playlist-context": 0.9,
+  "playlist-context": 0.45,
   "single-pool": 1,
-  "taste-profile": 0.7,
+  "taste-profile": 0.22,
 })
+
+const CONSENSUS_DISCOVERY_SOURCES = new Set([
+  "recommendations",
+  "inspired-by",
+  "radio",
+  "related-artists",
+  "discovered-on",
+])
 
 const clamp = (value: number, minimum = 0, maximum = 1): number =>
   Math.max(minimum, Math.min(maximum, value))
@@ -106,24 +142,33 @@ const mergeCandidate = (
   for (const [key, value] of Object.entries(next) as Array<
     [keyof TrackCandidate, TrackCandidate[keyof TrackCandidate]]
   >) {
+    if (key === "genres") continue
     if (value !== undefined && value !== null && value !== "") {
       ;(merged as Record<keyof TrackCandidate, TrackCandidate[keyof TrackCandidate]>)[key] = value
     }
   }
+  const mergedGenres = [
+    ...new Set(
+      [...(current.genres ?? []), ...(next.genres ?? [])]
+        .filter((genre): genre is string => typeof genre === "string" && genre.trim().length > 0)
+        .map((genre) => genre.trim())
+    ),
+  ]
+  if (mergedGenres.length > 0) merged.genres = mergedGenres
   return merged
 }
 
 const contextAffinity = (
   candidate: TrackCandidate,
   seed: SeedMetadata | null | undefined,
+  effectiveGenres: readonly string[],
   references: readonly TrackCandidate[],
   eraWindow: number
 ): number | undefined => {
-  const seedDistance =
-    seed && references.length > 0
-      ? acousticDistanceV2(acousticProfile(candidate), acousticProfile(seed))
-      : null
-  const seedAffinity = seedDistance != null ? Math.exp(-2.2 * seedDistance) : undefined
+  // Note: direct seed-to-candidate acoustic distance is already scored by
+  // rankCandidatesV2's dedicated `acoustic` component (`options.seedProfile`).
+  // Keeping `context` focused on genre compatibility, reference-track context,
+  // and release-era alignment avoids double-counting seed acoustics.
   let referenceAffinity: number | undefined
   if (references.length > 0) {
     const distances = references
@@ -139,17 +184,24 @@ const contextAffinity = (
     }
   }
 
-  if (seedAffinity != null && referenceAffinity != null) {
-    return 0.6 * seedAffinity + 0.4 * referenceAffinity
-  }
-  if (seedAffinity != null) return seedAffinity
-  if (referenceAffinity != null) return referenceAffinity
+  const genreCompat = scoreGenreCompatibility(effectiveGenres, candidate.genres)
+  const eraAffinity =
+    seed?.releaseYear != null && candidate.releaseYear != null
+      ? Math.exp(-Math.abs(candidate.releaseYear - seed.releaseYear) / Math.max(1, eraWindow))
+      : undefined
 
-  if (seed?.releaseYear != null && candidate.releaseYear != null) {
-    const difference = Math.abs(candidate.releaseYear - seed.releaseYear)
-    return Math.exp(-difference / Math.max(1, eraWindow))
+  const parts: Array<{ value: number; weight: number }> = []
+  if (genreCompat !== null) parts.push({ value: genreCompat, weight: seed ? 0.68 : 0.45 })
+  if (referenceAffinity !== undefined) {
+    // In track-seed mode, keep reference tracks subordinate (0.16) to seed genre/era
+    // so refills never drift away from the original clicked song.
+    parts.push({ value: referenceAffinity, weight: seed ? 0.16 : 0.55 })
   }
-  return undefined
+  if (eraAffinity !== undefined) parts.push({ value: eraAffinity, weight: 0.16 })
+
+  if (parts.length === 0) return undefined
+  const weightSum = parts.reduce((sum, part) => sum + part.weight, 0)
+  return clamp(parts.reduce((sum, part) => sum + part.value * part.weight, 0) / weightSum)
 }
 
 const percentileFor = (value: number, sorted: readonly number[]): number => {
@@ -197,38 +249,201 @@ const popularityAffinities = (
 
 const tasteAffinities = (
   candidates: readonly TrackCandidate[],
-  settings: SmartConfig,
-  genres: readonly string[]
-): Map<string, number> => {
-  const result = new Map<string, number>()
-  if (!settings.tasteProfile) return result
+  settings: SmartConfig
+): { values: Map<string, number>; positiveScores: Array<{ uri: string; score: number }> } => {
+  const values = new Map<string, number>()
+  const positiveScores: Array<{ uri: string; score: number }> = []
+  if (!settings.tasteProfile) return { values, positiveScores }
   const now = settings.tasteProfileNow ?? settings.tasteProfile.updatedAt
   const confidence = getTasteProfileConfidence(settings.tasteProfile, now)
-  if (!confidence.ready) return result
+  if (!confidence.ready) return { values, positiveScores }
   for (const candidate of candidates) {
     const multiplier = scoreTasteAffinity(candidate, settings.tasteProfile, {
-      genres,
+      genres: candidate.genres,
       now,
       contextKey: settings.tasteContextKey,
     })
     if (Math.abs(multiplier - 1) > 1e-6) {
-      result.set(candidate.uri, clamp((multiplier - 0.5) / 1.25))
+      const normalized = clamp((multiplier - 0.5) / 1.25)
+      values.set(candidate.uri, normalized)
+      if (multiplier > 1.02) {
+        positiveScores.push({ uri: candidate.uri, score: normalized })
+      }
     }
   }
-  return result
+  return { values, positiveScores }
+}
+
+const historyFreshnessMultipliers = (
+  candidates: readonly TrackCandidate[],
+  recentHistoryUris: readonly string[] | undefined,
+  metadataByUri: ReadonlyMap<string, TrackCandidate>
+): Map<string, number> => {
+  const multipliers = new Map<string, number>()
+  if (!recentHistoryUris?.length) return multipliers
+
+  const positionByUri = new Map<string, number>()
+  const positionByCanonical = new Map<string, number>()
+  recentHistoryUris.forEach((uri, index) => {
+    if (!uri) return
+    if (!positionByUri.has(uri)) positionByUri.set(uri, index)
+    const known = metadataByUri.get(uri)
+    if (known) {
+      for (const canonical of canonicalKeysForTrack(known)) {
+        if (!positionByCanonical.has(canonical)) {
+          positionByCanonical.set(canonical, index)
+        }
+      }
+    }
+  })
+
+  for (const candidate of candidates) {
+    const directPos = positionByUri.get(candidate.uri)
+    let canonicalPos: number | undefined
+    for (const canonical of canonicalKeysForTrack(candidate)) {
+      const observed = positionByCanonical.get(canonical)
+      if (observed !== undefined && (canonicalPos === undefined || observed < canonicalPos)) {
+        canonicalPos = observed
+      }
+    }
+    const position =
+      directPos !== undefined && canonicalPos !== undefined
+        ? Math.min(directPos, canonicalPos)
+        : (directPos ?? canonicalPos)
+    if (position !== undefined) {
+      // Smooth exponential recovery from 0.12 (just played) back toward 1.0 over ~120 plays.
+      const freshness = clamp(0.12 + 0.88 * (1 - Math.exp(-position / 35)))
+      multipliers.set(candidate.uri, freshness)
+    }
+  }
+
+  return multipliers
 }
 
 const addRankedProvenance = (
   aggregates: Map<string, { track: TrackCandidate; provenance: CandidateProvenance[] }>,
   scored: Array<{ uri: string; score: number }>,
   source: string,
-  family: BlendFamily
+  familyOverride?: BlendFamily
 ): void => {
   scored
     .sort((left, right) => right.score - left.score || left.uri.localeCompare(right.uri))
     .forEach((entry, index) => {
-      aggregates.get(entry.uri)?.provenance.push({ source, family, rank: index + 1 })
+      const existing = aggregates.get(entry.uri)
+      if (!existing) return
+      const family = familyOverride ?? existing.provenance[0]?.family ?? "similar"
+      existing.provenance.push({ source, family, rank: index + 1 })
     })
+}
+
+const getCandidateArtistTokens = (candidate: {
+  artistUri?: string
+  artistName?: string
+  artistUris?: string[]
+  artistNames?: string[]
+}): string[] => {
+  const tokens: string[] = []
+  if (candidate.artistUri) {
+    tokens.push(candidate.artistUri.trim().toLowerCase())
+  }
+  if (candidate.artistUris) {
+    for (const uri of candidate.artistUris) {
+      if (uri) tokens.push(uri.trim().toLowerCase())
+    }
+  }
+  if (candidate.artistName) {
+    const norm = candidate.artistName.trim().toLowerCase().replace(/\s+/g, " ")
+    tokens.push(`name:${norm}`)
+    tokens.push(norm)
+  }
+  if (candidate.artistNames) {
+    for (const name of candidate.artistNames) {
+      if (name) {
+        const norm = name.trim().toLowerCase().replace(/\s+/g, " ")
+        tokens.push(`name:${norm}`)
+        tokens.push(norm)
+      }
+    }
+  }
+  return tokens
+}
+
+type ArtistDamping = {
+  artistFreshness: number
+  habitualDamping: number
+}
+
+const artistFreshnessMultipliers = (
+  candidates: readonly TrackCandidate[],
+  options: PlanRecommendationBatchV2Options,
+  metadataByUri: ReadonlyMap<string, TrackCandidate>
+): Map<string, ArtistDamping> => {
+  const result = new Map<string, ArtistDamping>()
+
+  const recentArtistObservations: Array<Set<string>> = []
+
+  for (const rawKey of options.recentArtistKeys ?? []) {
+    const norm = rawKey.trim().toLowerCase()
+    const set = new Set<string>([norm])
+    if (norm.startsWith("name:")) {
+      set.add(norm.slice(5).trim())
+    }
+    recentArtistObservations.push(set)
+  }
+
+  for (const uri of options.recentHistoryUris ?? []) {
+    const track = metadataByUri.get(uri)
+    if (!track) continue
+    const tokens = getCandidateArtistTokens(track)
+    if (tokens.length > 0) {
+      recentArtistObservations.push(new Set(tokens))
+    }
+  }
+
+  for (const candidate of candidates) {
+    const candidateTokens = getCandidateArtistTokens(candidate)
+
+    let artistPos: number | undefined
+    let artistRecentOccurrences = 0
+
+    if (candidateTokens.length > 0) {
+      for (let index = 0; index < recentArtistObservations.length; index += 1) {
+        const obs = recentArtistObservations[index]
+        const matches = candidateTokens.some((token) => obs.has(token))
+        if (matches) {
+          if (artistPos === undefined) {
+            artistPos = index
+          }
+          artistRecentOccurrences += 1
+        }
+      }
+    }
+
+    let artistFreshness = 1.0
+    if (artistPos !== undefined && options.mode !== "artist") {
+      const posDecay = clamp(0.24 + 0.76 * (1 - Math.exp(-artistPos / 18)))
+      const freqDecay = Math.exp(-0.22 * Math.max(0, artistRecentOccurrences - 1))
+      artistFreshness = clamp(posDecay * freqDecay, 0.15, 1.0)
+    }
+
+    let habitualDamping = 1.0
+    if (options.mode !== "artist") {
+      const tasteHabitual = scoreArtistHabitualPenalty(
+        candidate,
+        options.settings.tasteProfile,
+        options.settings.tasteProfileNow
+      )
+      const isHabitual = Boolean(
+        options.habitualArtistKeys &&
+          candidateTokens.some((token) => options.habitualArtistKeys?.has(token))
+      )
+      habitualDamping = clamp(isHabitual ? tasteHabitual * 0.62 : tasteHabitual, 0.35, 1.0)
+    }
+
+    result.set(candidate.uri, { artistFreshness, habitualDamping })
+  }
+
+  return result
 }
 
 const normalizedEntropy = (values: readonly string[], maximumCategories: number): number => {
@@ -286,6 +501,7 @@ export const planRecommendationBatchV2 = (
   options: PlanRecommendationBatchV2Options
 ): TrackCandidate[] => {
   const excluded = new Set(options.excludedUris ?? [])
+  if (options.seed?.uri) excluded.add(options.seed.uri)
   const metadataByUri = new Map<string, TrackCandidate>()
   const rememberMetadata = (candidate: TrackCandidate): void => {
     if (!candidate.uri) return
@@ -296,16 +512,42 @@ export const planRecommendationBatchV2 = (
   }
   for (const reference of options.referenceTracks ?? []) rememberMetadata(reference)
   if (options.seed) rememberMetadata(options.seed)
-  const aggregates = new Map<string, { track: TrackCandidate; provenance: CandidateProvenance[] }>()
+
+  const excludedCanonical = new Set<string>(options.excludedCanonicalKeys ?? [])
+  if (options.seed) {
+    for (const key of canonicalKeysForTrack(options.seed)) {
+      excludedCanonical.add(key)
+    }
+  }
+  for (const uri of excluded) {
+    const known = metadataByUri.get(uri)
+    if (known) {
+      for (const key of canonicalKeysForTrack(known)) {
+        excludedCanonical.add(key)
+      }
+    }
+  }
+
+  const rawAggregates = new Map<
+    string,
+    { track: TrackCandidate; provenance: CandidateProvenance[] }
+  >()
   const sourceWeights: Record<string, number> = {}
   const sourceRanks = new Map<string, number>()
+  const artistCountBySource = new Map<string, number>()
 
   for (const pool of options.pools) {
     const weight =
       typeof pool.weight === "number" && Number.isFinite(pool.weight) ? Math.max(0, pool.weight) : 1
     pool.candidates.forEach((candidate) => {
       if (!candidate.uri?.startsWith("spotify:track:") || excluded.has(candidate.uri)) return
-      const realSources = getSourceProvenance(candidate)
+      const mergedKnown = metadataByUri.get(candidate.uri) ?? candidate
+      if (canonicalKeysForTrack(mergedKnown).some((key) => excludedCanonical.has(key))) {
+        return
+      }
+      const realSources = getSourceProvenance(candidate).filter(
+        (source) => !source.startsWith("profile-playlist:")
+      )
       const sources = realSources.length > 0 ? [...new Set(realSources)] : [pool.source]
       const provenance = sources.map((source) => {
         const rank = (sourceRanks.get(source) ?? 0) + 1
@@ -314,80 +556,161 @@ export const planRecommendationBatchV2 = (
           sourceWeights[source] ?? 0,
           weight * (SOURCE_RELIABILITY[source] ?? 0.8)
         )
-        return { source, family: pool.family, rank } satisfies CandidateProvenance
+        const aKey = artistKey(candidate)
+        const sourceArtistKey = `${source}::${aKey}`
+        const occurrence = (artistCountBySource.get(sourceArtistKey) ?? 0) + 1
+        artistCountBySource.set(sourceArtistKey, occurrence)
+        const effectiveRank = occurrence > 1 ? rank + (occurrence - 1) * 14 : rank
+        return { source, family: pool.family, rank: effectiveRank } satisfies CandidateProvenance
       })
-      const current = aggregates.get(candidate.uri)
-      aggregates.set(candidate.uri, {
+      const current = rawAggregates.get(candidate.uri)
+      rawAggregates.set(candidate.uri, {
         track: mergeCandidate(current?.track, candidate),
         provenance: [...(current?.provenance ?? []), ...provenance],
       })
     })
   }
 
-  const candidates = [...aggregates.values()].map((entry) => entry.track)
+  const rawCandidates = [...rawAggregates.values()].map((entry) => entry.track)
   const references = options.referenceTracks ?? []
+  const effectiveGenres = options.seed
+    ? expandSeedGenresFromGraph(options.seed, rawCandidates)
+    : inferSeedGenres({ genres: [] }, references)
+
+  const vocalSession = options.seed
+    ? isVocalSeed(options.seed)
+    : references.length === 0 ||
+      references.filter((ref) => isVocalSeed(ref)).length >= references.length / 2
+  const soundtrackSession = options.seed
+    ? isSoundtrackSeed(options.seed, effectiveGenres)
+    : references.some((ref) =>
+        isSoundtrackSeed({ albumName: ref.albumName, genres: ref.genres ?? [] })
+      )
+
+  const allowedAfterSoundtrackAndTitle = new Set(
+    filterSoundtracksAndInstrumentals(rawCandidates, vocalSession, soundtrackSession)
+      .filter((track) => !hasDisqualifyingTitleMismatch(options.seed ?? undefined, track))
+      .map((track) => track.uri)
+  )
+
+  const baseEntries = [...rawAggregates.entries()].filter(([uri]) =>
+    allowedAfterSoundtrackAndTitle.has(uri)
+  )
+
+  // Coherence gate: eliminate cross-genre intrusions and jarring sonic outliers
+  // while preserving a safe non-starvation floor on tiny pools.
+  const genreFilteredEntries = baseEntries.filter(([, entry]) => {
+    const genreCompat = scoreGenreCompatibility(effectiveGenres, entry.track.genres)
+    if (genreCompat !== null && genreCompat < 0.22) {
+      const consensusHits = new Set(
+        entry.provenance
+          .map((hit) => hit.source)
+          .filter((source) => CONSENSUS_DISCOVERY_SOURCES.has(source))
+      )
+      return consensusHits.size >= 2
+    }
+    return true
+  })
+
+  const activeAfterGenre =
+    genreFilteredEntries.length > 0 || baseEntries.length === 0 ? genreFilteredEntries : baseEntries
+
+  const sonicFilteredEntries = options.seed
+    ? activeAfterGenre.filter(
+        ([, entry]) => !isSonicOutlier(options.seed ?? undefined, entry.track)
+      )
+    : activeAfterGenre
+
+  const coherentEntries =
+    sonicFilteredEntries.length >= Math.min(3, activeAfterGenre.length)
+      ? sonicFilteredEntries
+      : activeAfterGenre
+
+  const aggregates = new Map(coherentEntries)
+  const candidates = [...aggregates.values()].map((entry) => entry.track)
   const contexts = new Map(
     candidates.map((candidate) => [
       candidate.uri,
-      contextAffinity(candidate, options.seed, references, options.settings.eraWindow),
+      contextAffinity(
+        candidate,
+        options.seed,
+        effectiveGenres,
+        references,
+        options.settings.eraWindow
+      ),
     ])
   )
   if (references.length > 0) {
-    sourceWeights["playlist-context"] = 0.9
+    sourceWeights["playlist-context"] = 0.45
     addRankedProvenance(
       aggregates,
       [...contexts]
         .filter((entry): entry is [string, number] => entry[1] != null)
         .map(([uri, score]) => ({ uri, score })),
-      "playlist-context",
-      "profile"
+      "playlist-context"
     )
   }
 
-  const genres = options.seed?.genres ?? []
-  const tastes = tasteAffinities(candidates, options.settings, genres)
-  if (tastes.size > 0) {
-    sourceWeights["taste-profile"] = 0.7
-    addRankedProvenance(
-      aggregates,
-      [...tastes].map(([uri, score]) => ({ uri, score })),
-      "taste-profile",
-      "profile"
-    )
+  const tastes = tasteAffinities(candidates, options.settings)
+  if (tastes.positiveScores.length > 0) {
+    sourceWeights["taste-profile"] = 0.22
+    addRankedProvenance(aggregates, tastes.positiveScores, "taste-profile")
   }
   const popularity = popularityAffinities(
     candidates,
     options.seed,
     options.settings.deprioritizePopular
   )
+  const historyFreshness = historyFreshnessMultipliers(
+    candidates,
+    options.recentHistoryUris,
+    metadataByUri
+  )
+  const artistDampingByUri = artistFreshnessMultipliers(candidates, options, metadataByUri)
 
-  const rankable: RankableCandidate[] = [...aggregates.values()].map(({ track, provenance }) => ({
-    uri: track.uri,
-    title: track.trackName,
-    artistUris: track.artistUri ? [track.artistUri] : undefined,
-    artistNames: track.artistName ? [track.artistName] : undefined,
-    albumUri: track.albumUri,
-    acoustic: acousticProfile(track),
-    provenance,
-    signals: {
-      contextAffinity: options.topTrackUris?.has(track.uri)
-        ? (contexts.get(track.uri) ?? 1) * 0.45
-        : contexts.get(track.uri),
-      tasteAffinity: tastes.get(track.uri),
-      novelty: popularity.get(track.uri),
-    },
-  }))
+  const rankable: RankableCandidate[] = [...aggregates.values()].map(({ track, provenance }) => {
+    const freshness = historyFreshness.get(track.uri)
+    const { artistFreshness, habitualDamping } = artistDampingByUri.get(track.uri) ?? {
+      artistFreshness: 1,
+      habitualDamping: 1,
+    }
+    const exposureMult = options.exposureMultipliers?.get(track.uri) ?? 1.0
+    const baseNovelty = popularity.get(track.uri)
+    let compositeNovelty = clamp(
+      (baseNovelty ?? 0.6) * (freshness ?? 1) * artistFreshness * habitualDamping * exposureMult
+    )
+    if (options.topTrackUris?.has(track.uri)) {
+      compositeNovelty = clamp(compositeNovelty * 0.35)
+    }
 
-  const ranked = rankCandidatesV2(rankable, {
+    return {
+      uri: track.uri,
+      title: track.trackName,
+      artistUris: track.artistUri ? [track.artistUri] : undefined,
+      artistNames: track.artistName ? [track.artistName] : undefined,
+      albumUri: track.albumUri,
+      acoustic: acousticProfile(track),
+      provenance,
+      signals: {
+        contextAffinity: options.topTrackUris?.has(track.uri)
+          ? (contexts.get(track.uri) ?? 1) * 0.45
+          : contexts.get(track.uri),
+        tasteAffinity: tastes.values.get(track.uri),
+        novelty: compositeNovelty,
+      },
+    }
+  })
+
+  const rawRanked = rankCandidatesV2(rankable, {
     sourceWeights,
     seedProfile: acousticProfile(options.seed),
     componentWeights: {
-      fusion: 0.2,
-      context: 0.12,
-      taste: 0.17,
-      acoustic: 0.08,
-      novelty: 0.08,
-      feedback: 0.35,
+      fusion: 0.24,
+      context: 0.23,
+      acoustic: 0.18,
+      novelty: 0.22,
+      taste: 0.08,
+      feedback: 0.05,
     },
     skipSignals: options.settings.skipFeedback?.map((skip) => ({
       artistUris: skip.artistUri ? [skip.artistUri] : undefined,
@@ -396,6 +719,40 @@ export const planRecommendationBatchV2 = (
       confidence: 1,
     })),
   })
+
+  const ranked = rawRanked
+    .map((candidate) => {
+      const freshness = historyFreshness.get(candidate.uri)
+      const trackFreshness = freshness !== undefined ? 0.52 + 0.48 * freshness : 1.0
+      const { artistFreshness, habitualDamping } = artistDampingByUri.get(candidate.uri) ?? {
+        artistFreshness: 1,
+        habitualDamping: 1,
+      }
+      const exposureMult = options.exposureMultipliers?.get(candidate.uri) ?? 1.0
+      const artistHabitualMultiplier = habitualDamping
+
+      let adjustedScore =
+        candidate.score * trackFreshness * artistFreshness * artistHabitualMultiplier * exposureMult
+
+      if (
+        vocalSession &&
+        candidate.acoustic?.instrumentalness != null &&
+        candidate.acoustic.instrumentalness > 0.22
+      ) {
+        const instPenalty = clamp(
+          1 - 0.65 * ((candidate.acoustic.instrumentalness - 0.22) / 0.28),
+          0.35,
+          1
+        )
+        adjustedScore *= instPenalty
+      }
+
+      return {
+        ...candidate,
+        score: adjustedScore,
+      }
+    })
+    .sort((left, right) => right.score - left.score || left.uri.localeCompare(right.uri))
 
   const candidateByUri = new Map(candidates.map((candidate) => [candidate.uri, candidate]))
   const queueTail = (options.queueTailUris ?? []).slice(-5).map((uri) => {
@@ -427,6 +784,8 @@ export const planRecommendationBatchV2 = (
     queueTail,
     familiarUris: new Set([...(options.familiarUris ?? []), ...(options.topTrackUris ?? [])]),
     discoveryHistory: options.discoveryHistory,
+    explorationBand: options.explorationBand,
+    explorationTemperature: options.explorationTemperature,
   })
   const tracks = plan.items
     .map((item) => candidateByUri.get(item.candidate.uri))

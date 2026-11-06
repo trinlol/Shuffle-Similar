@@ -23,6 +23,7 @@ import {
   detectForeignInjection,
   disableAutoplayGuard,
   enableAutoplayGuard,
+  isUserQueuedDetourTrack,
   syncKnownQueue,
 } from "./autoplayGuard"
 
@@ -148,5 +149,92 @@ describe("autoplay guard", () => {
     syncKnownQueue(owned)
 
     expect(detectForeignInjection()).toEqual(["spotify:track:foreign"])
+  })
+
+  it("preserves a manually user-queued detour track placed ahead of owned mix tracks while still catching context injections", () => {
+    const owned = ["spotify:track:mix-one", "spotify:track:mix-two"]
+    const userQueued = "spotify:track:pardyalone-detour"
+    const rogueContext = "spotify:track:autoplay-intruder"
+
+    vi.stubGlobal("Spicetify", {
+      Queue: {
+        nextTracks: [
+          { uri: userQueued, provider: "queue" },
+          { uri: owned[0], provider: "queue" },
+          { uri: owned[1], provider: "queue" },
+        ],
+      },
+      Player: { data: { item: { uri: "spotify:track:gracie-seed" } } },
+    })
+    mocks.isActive.mockReturnValue(true)
+    mocks.getQueuedUris.mockReturnValue(owned)
+    mocks.ownsQueueTrack.mockImplementation((uri) => owned.includes(uri))
+    mocks.getUpcomingQueueUris.mockReturnValue([userQueued, ...owned])
+    enableAutoplayGuard()
+    syncKnownQueue(owned)
+
+    expect(detectForeignInjection()).toEqual([])
+
+    // If a non-queue context track also slips in before the owned queue finishes, only that intruder is flagged.
+    vi.stubGlobal("Spicetify", {
+      Queue: {
+        nextTracks: [
+          { uri: userQueued, provider: "queue" },
+          { uri: rogueContext, provider: "context" },
+          { uri: owned[0], provider: "queue" },
+          { uri: owned[1], provider: "queue" },
+        ],
+      },
+      Player: { data: { item: { uri: "spotify:track:gracie-seed" } } },
+    })
+    mocks.getUpcomingQueueUris.mockReturnValue([userQueued, rogueContext, ...owned])
+
+    expect(detectForeignInjection()).toEqual([rogueContext])
+  })
+
+  it("unsubscribes replaced _events emitters and caps observed user-queued detour URIs", () => {
+    const firstEmitter = { addListener: vi.fn(), removeListener: vi.fn() }
+    const secondEmitter = { addListener: vi.fn(), removeListener: vi.fn() }
+
+    vi.stubGlobal("Spicetify", {
+      Platform: { PlayerAPI: { _events: firstEmitter } },
+      Queue: { nextTracks: [] },
+    })
+    enableAutoplayGuard()
+    expect(firstEmitter.addListener).toHaveBeenCalledTimes(1)
+
+    vi.stubGlobal("Spicetify", {
+      Platform: { PlayerAPI: { _events: secondEmitter } },
+      Queue: { nextTracks: [] },
+    })
+    enableAutoplayGuard()
+    expect(firstEmitter.removeListener).toHaveBeenCalledTimes(1)
+    expect(secondEmitter.addListener).toHaveBeenCalledTimes(1)
+
+    mocks.isActive.mockReturnValue(true)
+    mocks.ownsQueueTrack.mockReturnValue(false)
+    const manualQueue = Array.from({ length: 150 }, (_, index) => ({
+      uri: `spotify:track:manual-${index}`,
+      provider: "queue",
+    }))
+    vi.stubGlobal("Spicetify", {
+      Platform: { PlayerAPI: { _events: secondEmitter } },
+      Queue: { nextTracks: manualQueue },
+      Player: { data: { item: { uri: "spotify:track:seed" } } },
+    })
+    const onQueueUpdate = secondEmitter.addListener.mock.calls[0][1] as () => void
+    onQueueUpdate()
+
+    // Clear live queue so lookup relies strictly on bounded observedUserQueuedUris
+    vi.stubGlobal("Spicetify", {
+      Platform: { PlayerAPI: { _events: secondEmitter } },
+      Queue: { nextTracks: [] },
+      Player: { data: { item: { uri: "spotify:track:seed" } } },
+    })
+    expect(isUserQueuedDetourTrack("spotify:track:manual-0")).toBe(false)
+    expect(isUserQueuedDetourTrack("spotify:track:manual-149")).toBe(true)
+
+    disableAutoplayGuard()
+    expect(secondEmitter.removeListener).toHaveBeenCalledTimes(1)
   })
 })

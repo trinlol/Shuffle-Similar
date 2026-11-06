@@ -21,19 +21,19 @@ const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
  * `waitForQueue`, which resolves on `queue_update` before these limits. */
 export const QUEUE_TIMING = {
   /** Upper bound for a clear to show up in Spotify's local snapshot. */
-  clearSettleMs: 2_000,
+  clearSettleMs: 1_000,
   /** Upper bound for a single PlayerAPI call to resolve. */
   operationTimeoutMs: 5_000,
   /** Re-read after a verified takeover to catch late context injection. */
-  postVerifyGuardMs: 250,
+  postVerifyGuardMs: 80,
   /** Delay before queueing after starting playback. */
   afterPlayDelayMs: 400,
   /** Upper bound for the queue to match a requested mix. */
   convergenceTimeoutMs: 1_000,
   /** Fallback poll interval while waiting for convergence. */
-  convergencePollMs: 100,
+  convergencePollMs: 25,
   /** Poll interval while waiting for the player to reach the seed track. */
-  seedTransitionPollMs: 100,
+  seedTransitionPollMs: 25,
 } as const
 
 export class QueueOperationTimeoutError extends Error {
@@ -198,9 +198,13 @@ const disableNativeShuffle = () => {
  * snapshot and writes the old queued tracks back ahead of the new mix. */
 const waitForQueueClearToSettle = async (): Promise<boolean> =>
   (
-    await waitForQueue((snapshot) => queuedUris(snapshot).length === 0, {
-      timeoutMs: QUEUE_TIMING.clearSettleMs,
-    })
+    await waitForQueue(
+      (snapshot) =>
+        queuedUris(snapshot).length === 0 && queuedUris(readInternalQueueSnapshot()).length === 0,
+      {
+        timeoutMs: QUEUE_TIMING.clearSettleMs,
+      }
+    )
   ).met
 
 const clearQueueSafe = async (): Promise<boolean> => {
@@ -287,6 +291,8 @@ const addTracksSafe = async (uris: string[]) => {
     throw error
   }
 }
+
+export const clearUpcomingQueue = async (): Promise<boolean> => clearQueueSafe()
 
 export const replaceQueue = async (
   uris: string[],
@@ -561,6 +567,10 @@ export const playSeedAndQueue = async (
 ): Promise<QueueCommit> => {
   const upcoming = queueUris.filter((uri) => uri !== seedUri && uri.startsWith("spotify:track:"))
 
+  // Scrap any previous upcoming queue before starting the new seed track so
+  // old queued tracks cannot survive the transition or be restored on rollback.
+  await clearQueueSafe()
+
   // Always play the seed — this is the context-menu path where the user
   // explicitly chose a song to start from.
   await playTrack(seedUri, playbackContext)
@@ -569,12 +579,12 @@ export const playSeedAndQueue = async (
   // This ensures that Spotify's playback initialization is complete
   // before we replace the upcoming queue, preventing the queue from being wiped out.
   let attempts = 0
-  while (Spicetify.Player.data?.item?.uri !== seedUri && attempts < 15) {
+  while (Spicetify.Player.data?.item?.uri !== seedUri && attempts < 60) {
     await wait(QUEUE_TIMING.seedTransitionPollMs)
     attempts++
   }
 
-  return await replaceUpcomingQueueForNewMix(seedUri, upcoming)
+  return await replaceUpcomingQueueForNewMix(seedUri, upcoming, playbackContext?.uri)
 }
 
 export const shuffleUpcomingInPlace = async (): Promise<boolean> => {

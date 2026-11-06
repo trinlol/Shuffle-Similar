@@ -1,6 +1,10 @@
 /** Keeps an active mix topped up and re-ranks what comes next after feedback. */
 import { recordOperation } from "../diagnostics/operationLog"
-import { detectForeignInjection, syncKnownQueue } from "../queue/autoplayGuard"
+import {
+  detectForeignInjection,
+  isUserQueuedDetourUri,
+  syncKnownQueue,
+} from "../queue/autoplayGuard"
 import {
   appendTracksToQueue,
   getConfirmedQueueOwnership,
@@ -70,7 +74,11 @@ const runRefillQueueIfNeeded = async (): Promise<void> => {
         outcome: "info",
         counts: { foreign: foreign.length },
       })
-      const cleaned = getUpcomingQueueUris().filter((uri) => sessionManager.ownsQueueTrack(uri))
+      const foreignSet = new Set(foreign)
+      const cleaned = getUpcomingQueueUris().filter(
+        (uri) =>
+          sessionManager.ownsQueueTrack(uri) || (isUserQueuedDetourUri(uri) && !foreignSet.has(uri))
+      )
       const current = Spicetify.Player.data?.item?.uri
       await replaceUpcomingQueue(current, cleaned)
     })

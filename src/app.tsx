@@ -7,6 +7,7 @@ import {
   recoverSimilarMixSession,
 } from "./services/shuffleEngine"
 import { sessionManager } from "./session/SessionManager"
+import type { TrackCandidate } from "./session/types"
 import { registerContextMenu } from "./ui/contextMenu"
 import {
   enforceNativeShuffleOff,
@@ -43,7 +44,7 @@ function bootExtension() {
   ;(globalThis as { __shuffleSimilarDiagnostics?: () => string }).__shuffleSimilarDiagnostics =
     buildDiagnosticsReport
 
-  const PLAYBAR_INIT_DELAY_MS = 4000
+  const RECOVERY_RETRY_DELAY_MS = 350
 
   let initialized = false
   let playbarInitialized = false
@@ -85,6 +86,21 @@ function bootExtension() {
     }
   }
 
+  const getCurrentPlayerTrackInfo = ():
+    | (Pick<TrackCandidate, "uri"> &
+        Partial<Pick<TrackCandidate, "trackName" | "artistUri" | "artistName">>)
+    | null => {
+    const item = Spicetify.Player.data?.item
+    const uri = item?.uri
+    if (!uri?.startsWith("spotify:track:")) return null
+    return {
+      uri,
+      trackName: item.name || item.metadata?.title || undefined,
+      artistUri: item.artists?.[0]?.uri || item.metadata?.artist_uri || undefined,
+      artistName: item.artists?.[0]?.name || item.metadata?.artist_name || undefined,
+    }
+  }
+
   const initializeExtension = () => {
     if (initialized) return
     initialized = true
@@ -94,7 +110,18 @@ function bootExtension() {
     tryRegisterContextMenu()
     setTimeout(tryRegisterContextMenu, 2000)
 
+    let lastObservedPlayerTrack = getCurrentPlayerTrackInfo()
+    let lastRememberedProgressUri: string | null = null
+
     Spicetify.Player.addEventListener("songchange", () => {
+      if (lastObservedPlayerTrack && lastObservedPlayerTrack.uri !== lastRememberedProgressUri) {
+        sessionManager.rememberPlayedTrack(lastObservedPlayerTrack)
+        lastRememberedProgressUri = lastObservedPlayerTrack.uri
+      }
+      lastObservedPlayerTrack = getCurrentPlayerTrackInfo()
+      if (lastObservedPlayerTrack?.uri !== lastRememberedProgressUri) {
+        lastRememberedProgressUri = null
+      }
       if (sessionManager.isToggleEnabled()) {
         enforceNativeShuffleOff()
       }
@@ -108,18 +135,27 @@ function bootExtension() {
           syncShuffleSimilarFromPlayback()
           return
         }
+        syncShuffleSimilarFromPlayback()
         playbackFailureWatchdog.observeSongChange(uri, sessionManager.ownsQueueTrack(uri))
       })
     })
     Spicetify.Player.addEventListener("onprogress", () => {
+      const progress = Spicetify.Player.getProgress()
+      const currentTrack = getCurrentPlayerTrackInfo()
+      if (currentTrack) {
+        lastObservedPlayerTrack = currentTrack
+        if (progress >= 1_000 && currentTrack.uri !== lastRememberedProgressUri) {
+          lastRememberedProgressUri = currentTrack.uri
+          sessionManager.rememberPlayedTrack(currentTrack)
+        }
+      }
       if (sessionManager.isActive()) {
-        const progress = Spicetify.Player.getProgress()
         sessionManager.recordProgress(
           progress,
           Spicetify.Player.getDuration(),
           Spicetify.Player.getRepeat() === 2
         )
-        const uri = Spicetify.Player.data?.item?.uri
+        const uri = currentTrack?.uri ?? Spicetify.Player.data?.item?.uri
         if (uri) {
           playbackFailureWatchdog.observeProgress(uri, progress)
           if (progress >= 1_000) sessionManager.confirmPlayback(uri)
@@ -127,15 +163,19 @@ function bootExtension() {
       }
     })
 
-    setTimeout(initializePlaybarFeatures, PLAYBAR_INIT_DELAY_MS)
-    setTimeout(() => {
+    initializePlaybarFeatures()
+
+    const attemptSessionRecovery = (allowRetry: boolean) => {
       void recoverSimilarMixSession().then((recovered) => {
         if (recovered) {
           syncShuffleSimilarFromPlayback()
           console.info("[Shuffle Similar] Recovered the active Similar Mix queue")
+        } else if (allowRetry) {
+          setTimeout(() => attemptSessionRecovery(false), RECOVERY_RETRY_DELAY_MS)
         }
       })
-    }, PLAYBAR_INIT_DELAY_MS + 250)
+    }
+    attemptSessionRecovery(true)
 
     console.info("[Shuffle Similar] Extension initialized")
   }
@@ -149,7 +189,7 @@ function bootExtension() {
       return
     }
 
-    setTimeout(waitForSpicetify, 200)
+    setTimeout(waitForSpicetify, 50)
   }
 
   const spicetifyEvents = (

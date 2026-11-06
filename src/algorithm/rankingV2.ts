@@ -81,6 +81,8 @@ export type PlanSlateV2Options = {
   mmrLambda?: number
   familiarUris?: ReadonlySet<string>
   discoveryHistory?: readonly boolean[]
+  explorationBand?: number
+  explorationTemperature?: number
 }
 
 export type RankReasonCode =
@@ -293,24 +295,98 @@ const VERSION_QUALIFIERS =
 const VERSION_NOUNS =
   "(?:remaster(?:ed)?|live|radio edit|edit|version|mix|mono|stereo|acoustic|demo|session|bonus track)"
 
+const BRACKETED_VERSION_REGEX = new RegExp(
+  `\\s*[\\[(][^)\\]]*(?:${VERSION_QUALIFIERS}\\s+)?${VERSION_NOUNS}[^)\\]]*[)\\]]`,
+  "gi"
+)
+
+const BRACKETED_DELUXE_REGEX = /\s*[[(]\s*(?:deluxe(?:\s+edition)?|explicit|clean)\s*[)\]]/gi
+
+const DASHED_VERSION_REGEX = new RegExp(
+  `\\s*[\\u002d\\u2013\\u2014]\\s*(?:\\d{4}\\s+)?(?:${VERSION_QUALIFIERS}\\s+)?(?:remaster(?:ed)?(?:\\s+\\d{4})?|live(?:\\s+at|\\s+from)?|radio edit|edit|version|mix|mono|stereo|acoustic|demo|session|bonus track).*$`,
+  "i"
+)
+
+const DASHED_DELUXE_REGEX =
+  /\s*[\u002d\u2013\u2014]\s*(?:deluxe(?:\s+edition)?|explicit|clean)\s*$/i
+
+const MAX_CANONICAL_TITLE_CACHE = 4_096
+const canonicalTitleCache = new Map<string, string>()
+
 export const canonicalizeTrackTitle = (title: string | undefined): string => {
   if (!title) return ""
+  const cached = canonicalTitleCache.get(title)
+  if (cached !== undefined) return cached
+
   const withoutVersionTags = title
-    .replace(
-      new RegExp(
-        `\\s*[\\[(][^)\\]]*(?:${VERSION_QUALIFIERS}\\s+)?${VERSION_NOUNS}[^)\\]]*[)\\]]`,
-        "gi"
-      ),
-      " "
-    )
-    .replace(
-      new RegExp(
-        `\\s*[\\u002d\\u2013\\u2014]\\s*(?:\\d{4}\\s+)?(?:${VERSION_QUALIFIERS}\\s+)?(?:remaster(?:ed)?(?:\\s+\\d{4})?|live(?:\\s+at|\\s+from)?|radio edit|edit|version|mix|mono|stereo|acoustic|demo|session|bonus track).*$`,
-        "i"
-      ),
-      ""
-    )
-  return normalizedText(withoutVersionTags)
+    .replace(BRACKETED_VERSION_REGEX, " ")
+    .replace(BRACKETED_DELUXE_REGEX, " ")
+    .replace(DASHED_VERSION_REGEX, "")
+    .replace(DASHED_DELUXE_REGEX, "")
+  const result = normalizedText(withoutVersionTags)
+  if (canonicalTitleCache.size >= MAX_CANONICAL_TITLE_CACHE) {
+    const oldestKey = canonicalTitleCache.keys().next().value
+    if (oldestKey !== undefined) {
+      canonicalTitleCache.delete(oldestKey)
+    }
+  }
+  canonicalTitleCache.set(title, result)
+  return result
+}
+
+const stripFeaturingClauses = (rawTitle: string): string =>
+  rawTitle
+    .replace(/\s*[[(]\s*(?:feat\.?|ft\.?|featuring)\b[^)\]]*[)\]]/gi, " ")
+    .replace(/\s*[\u002d\u2013\u2014]\s*(?:feat\.?|ft\.?|featuring)\b.*$/i, "")
+
+export type CanonicalTrackIdentityInput = {
+  uri?: string
+  title?: string
+  trackName?: string
+  artistUri?: string
+  artistUris?: readonly string[]
+  artistName?: string
+  artistNames?: readonly string[]
+}
+
+/**
+ * Generates all canonical song-identity keys (`canonicalTitle + artistUri` and
+ * `canonicalTitle + artistName`) so alternate uploads (Single, Album, Deluxe,
+ * Remaster) match reliably even when one source supplies only an artist name
+ * and another supplies an artist URI.
+ */
+export const canonicalKeysForTrack = (input: CanonicalTrackIdentityInput): string[] => {
+  const rawTitle = input.title ?? input.trackName
+  const primaryTitle = canonicalizeTrackTitle(rawTitle)
+  if (!primaryTitle) return []
+  const featStrippedTitle = rawTitle ? canonicalizeTrackTitle(stripFeaturingClauses(rawTitle)) : ""
+  const titles = [...new Set([primaryTitle, featStrippedTitle].filter(Boolean))]
+
+  const uriTokens = [...(input.artistUris ?? []), ...(input.artistUri ? [input.artistUri] : [])]
+    .map(normalizedText)
+    .filter(Boolean)
+  const nameTokens = [...(input.artistNames ?? []), ...(input.artistName ? [input.artistName] : [])]
+    .map(normalizedText)
+    .filter(Boolean)
+
+  const keys: string[] = []
+  const uniqueUris = [...new Set(uriTokens)].sort()
+  const uniqueNames = [...new Set(nameTokens)].sort()
+  for (const title of titles) {
+    if (uniqueUris.length > 0) {
+      const joinedUris = uniqueUris.join("+")
+      keys.push(`${title}::uri:${joinedUris}`)
+      keys.push(`${title}::${joinedUris}`)
+    }
+    if (uniqueNames.length > 0) {
+      const joinedNames = uniqueNames.join("+")
+      keys.push(`${title}::name:${joinedNames}`)
+      if (uniqueUris.length === 0) {
+        keys.push(`${title}::${joinedNames}`)
+      }
+    }
+  }
+  return [...new Set(keys)]
 }
 
 const artistKeys = (candidate: RankableCandidate): string[] => {
@@ -337,24 +413,34 @@ export const acousticDistanceV2 = (
   right: AcousticProfile | undefined
 ): number | null => {
   if (!left || !right) return null
-  const pairs: Array<[number | undefined, number | undefined, boolean?]> = [
-    [left.tempo, right.tempo, true],
-    [left.energy, right.energy],
-    [left.valence, right.valence],
-    [left.danceability, right.danceability],
-    [left.acousticness, right.acousticness],
-    [left.instrumentalness, right.instrumentalness],
-  ]
-  const squaredDeltas = pairs.flatMap(([a, b, tempo]) => {
-    if (a == null || b == null || !Number.isFinite(a) || !Number.isFinite(b)) return []
-    const normalizedA = tempo ? normalizeTempoV2(a) : Math.max(0, Math.min(1, a))
-    const normalizedB = tempo ? normalizeTempoV2(b) : Math.max(0, Math.min(1, b))
-    return [(normalizedA - normalizedB) ** 2]
-  })
-  if (squaredDeltas.length < 2) return null
-  return Math.sqrt(
-    squaredDeltas.reduce((sum, squaredDelta) => sum + squaredDelta, 0) / squaredDeltas.length
-  )
+  let sum = 0
+  let count = 0
+
+  const addUnit = (a: number | undefined, b: number | undefined) => {
+    if (a == null || b == null || !Number.isFinite(a) || !Number.isFinite(b)) return
+    const delta = Math.max(0, Math.min(1, a)) - Math.max(0, Math.min(1, b))
+    sum += delta * delta
+    count += 1
+  }
+
+  if (
+    left.tempo != null &&
+    right.tempo != null &&
+    Number.isFinite(left.tempo) &&
+    Number.isFinite(right.tempo)
+  ) {
+    const delta = normalizeTempoV2(left.tempo) - normalizeTempoV2(right.tempo)
+    sum += delta * delta
+    count += 1
+  }
+  addUnit(left.energy, right.energy)
+  addUnit(left.valence, right.valence)
+  addUnit(left.danceability, right.danceability)
+  addUnit(left.acousticness, right.acousticness)
+  addUnit(left.instrumentalness, right.instrumentalness)
+
+  if (count < 2) return null
+  return Math.sqrt(sum / count)
 }
 
 const overlaps = (left: string[], right: string[]): boolean => {
@@ -385,24 +471,48 @@ const constraintViolations = (
     violations.push("album")
   }
 
-  if (absolutePosition < 20 && candidateArtists.length > 0) {
-    const counts = new Map<string, number>()
-    const absoluteStartPosition = absolutePosition - items.length
-    const queueTailStartPosition = absoluteStartPosition - queueTail.length
-    for (let index = 0; index < queueTail.length; index += 1) {
-      const tailPosition = queueTailStartPosition + index
-      if (tailPosition < 0 || tailPosition >= 20) continue
-      for (const artist of artistKeys(queueTail[index])) {
-        counts.set(artist, (counts.get(artist) ?? 0) + 1)
+  if (candidateArtists.length > 0) {
+    if (absolutePosition < 20) {
+      const counts = new Map<string, number>()
+      const absoluteStartPosition = absolutePosition - items.length
+      const queueTailStartPosition = absoluteStartPosition - queueTail.length
+      for (let index = 0; index < queueTail.length; index += 1) {
+        const tailPosition = queueTailStartPosition + index
+        if (tailPosition < 0 || tailPosition >= 20) continue
+        for (const artist of artistKeys(queueTail[index])) {
+          counts.set(artist, (counts.get(artist) ?? 0) + 1)
+        }
       }
-    }
-    for (const item of items.filter((entry) => entry.absolutePosition < 20)) {
-      for (const artist of artistKeys(item.candidate)) {
-        counts.set(artist, (counts.get(artist) ?? 0) + 1)
+      for (const item of items.filter((entry) => entry.absolutePosition < 20)) {
+        for (const artist of artistKeys(item.candidate)) {
+          counts.set(artist, (counts.get(artist) ?? 0) + 1)
+        }
       }
-    }
-    if (candidateArtists.some((artist) => (counts.get(artist) ?? 0) >= 2)) {
-      violations.push("artistCap")
+      if (candidateArtists.some((artist) => (counts.get(artist) ?? 0) >= 2)) {
+        violations.push("artistCap")
+      }
+    } else {
+      const recent25 = history.slice(-25)
+      const recent25Counts = new Map<string, number>()
+      for (const entry of recent25) {
+        for (const artist of artistKeys(entry)) {
+          recent25Counts.set(artist, (recent25Counts.get(artist) ?? 0) + 1)
+        }
+      }
+      const totalSlateCounts = new Map<string, number>()
+      for (const entry of history) {
+        for (const artist of artistKeys(entry)) {
+          totalSlateCounts.set(artist, (totalSlateCounts.get(artist) ?? 0) + 1)
+        }
+      }
+      if (
+        candidateArtists.some(
+          (artist) =>
+            (recent25Counts.get(artist) ?? 0) >= 2 || (totalSlateCounts.get(artist) ?? 0) >= 3
+        )
+      ) {
+        violations.push("artistCap")
+      }
     }
   }
 
@@ -526,7 +636,7 @@ export const evaluateSlateV2 = (
 
 const candidateSimilarity = (candidate: RankableCandidate, other: RankableCandidate): number => {
   let similarity = 0
-  if (overlaps(artistKeys(candidate), artistKeys(other))) similarity = Math.max(similarity, 0.85)
+  if (overlaps(artistKeys(candidate), artistKeys(other))) similarity = Math.max(similarity, 0.92)
   if (candidate.albumUri && candidate.albumUri === other.albumUri)
     similarity = Math.max(similarity, 0.9)
   const acousticDistance = acousticDistanceV2(candidate.acoustic, other.acoustic)
@@ -625,9 +735,19 @@ export const rankCandidatesV2 = (
         taste: unitValue(candidate.signals?.tasteAffinity),
         acoustic: acousticAffinity,
         novelty: unitValue(candidate.signals?.novelty),
-        feedback: learnedFeedbackAffinity,
+        feedback: null,
       }
       const breakdown = buildBreakdown(values, options.componentWeights)
+      breakdown.values.feedback = learnedFeedbackAffinity
+
+      const isSkipPenalized = learnedFeedbackAffinity != null && learnedFeedbackAffinity < 0.999
+      if (isSkipPenalized) {
+        for (const component of SCORE_COMPONENTS) {
+          breakdown.contributions[component] *= learnedFeedbackAffinity
+        }
+        breakdown.total *= learnedFeedbackAffinity
+      }
+
       const reasonCodes: RankReasonCode[] = []
       if (new Set(candidate.provenance.map((hit) => hit.source)).size > 1) {
         reasonCodes.push("rank:multi-source")
@@ -638,7 +758,7 @@ export const rankCandidatesV2 = (
       if ((values.context ?? 0) >= 0.7) reasonCodes.push("rank:context-match")
       if ((values.taste ?? 0) >= 0.7) reasonCodes.push("rank:taste-match")
       if ((values.acoustic ?? 0) >= 0.7) reasonCodes.push("rank:acoustic-match")
-      if (values.feedback != null && values.feedback < 0.7) {
+      if (learnedFeedbackAffinity != null && learnedFeedbackAffinity < 0.7) {
         reasonCodes.push("rank:skip-penalized")
       }
       if (!candidate.title || artistKeys(candidate).length === 0 || !candidate.albumUri) {
@@ -648,7 +768,12 @@ export const rankCandidatesV2 = (
         ...candidate,
         fusionScore,
         familyFusionScore,
-        score: breakdown.availableWeight > 0 ? breakdown.total : 0.5,
+        score:
+          breakdown.availableWeight > 0
+            ? breakdown.total
+            : isSkipPenalized
+              ? 0.5 * learnedFeedbackAffinity
+              : 0.5,
         breakdown,
         reasonCodes,
       }
@@ -669,13 +794,21 @@ export const planSlateV2 = (
   const mmrLambda = Math.max(0, Math.min(1, options.mmrLambda ?? 0.72))
   const familiarUris = options.familiarUris ?? new Set<string>()
   const discoveryHistory = [...(options.discoveryHistory ?? [])].slice(-9)
-  const seenCanonical = new Set(queueTail.map(canonicalTrackKey))
+  const seenCanonical = new Set<string>()
+  for (const tailItem of queueTail) {
+    seenCanonical.add(canonicalTrackKey(tailItem))
+    for (const key of canonicalKeysForTrack(tailItem)) seenCanonical.add(key)
+  }
   const seenUris = new Set(queueTail.map((candidate) => candidate.uri))
   let remaining = rankedCandidates.filter((candidate) => {
     if (seenUris.has(candidate.uri)) return false
     const canonical = canonicalTrackKey(candidate)
-    if (seenCanonical.has(canonical)) return false
+    const allCanonical = canonicalKeysForTrack(candidate)
+    if (seenCanonical.has(canonical) || allCanonical.some((key) => seenCanonical.has(key))) {
+      return false
+    }
     seenCanonical.add(canonical)
+    for (const key of allCanonical) seenCanonical.add(key)
     return true
   })
   const items: PlannedTrack[] = []
@@ -719,7 +852,7 @@ export const planSlateV2 = (
     const priorDiscovery = [...discoveryHistory, ...items.map((item) => item.discoveryEligible)]
     const recentDiscovery = priorDiscovery.slice(-9)
     const discoverySoFar = recentDiscovery.filter(Boolean).length
-    const targetAfterPick = Math.ceil((Math.min(9, priorDiscovery.length) + 1) * 0.4)
+    const targetAfterPick = Math.ceil((Math.min(9, priorDiscovery.length) + 1) * 0.5)
     const needsDiscovery = discoverySoFar < targetAfterPick
     let usedDiscoveryFloor = false
     let relaxedDiscoveryFloor = false
@@ -774,8 +907,34 @@ export const planSlateV2 = (
       }
     })
     const bestScore = Math.max(...objectives.map((entry) => entry.objective))
-    const tied = objectives.filter((entry) => Math.abs(entry.objective - bestScore) < 1e-12)
-    const picked = (tied[Math.floor(rng() * tied.length)] ?? objectives[0]).candidate
+    const explorationBand =
+      typeof options.explorationBand === "number" && Number.isFinite(options.explorationBand)
+        ? Math.max(0, options.explorationBand)
+        : 0
+    let picked: RankedCandidate
+    if (explorationBand > 0) {
+      const temperature = finitePositive(options.explorationTemperature, explorationBand * 0.45)
+      const contenders = objectives.filter(
+        (entry) => bestScore - entry.objective <= explorationBand
+      )
+      const weights = contenders.map((entry) =>
+        Math.exp((entry.objective - bestScore) / temperature)
+      )
+      const weightSum = weights.reduce((sum, weight) => sum + weight, 0)
+      let roll = rng() * weightSum
+      let chosen = contenders[contenders.length - 1] ?? objectives[0]
+      for (let index = 0; index < contenders.length; index += 1) {
+        roll -= weights[index]
+        if (roll <= 0) {
+          chosen = contenders[index]
+          break
+        }
+      }
+      picked = chosen.candidate
+    } else {
+      const tied = objectives.filter((entry) => Math.abs(entry.objective - bestScore) < 1e-12)
+      picked = (tied[Math.floor(rng() * tied.length)] ?? objectives[0]).candidate
+    }
     const dominantFamily = dominantFamilyFor(picked)
     const previous = selectedCandidates[selectedCandidates.length - 1]
     const acousticDistanceFromPrevious = acousticDistanceV2(previous?.acoustic, picked.acoustic)

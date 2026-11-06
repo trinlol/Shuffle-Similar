@@ -1,3 +1,5 @@
+import { sessionManager } from "../session/SessionManager"
+
 const PLAYLIST_TRACK_LIMIT = 100
 
 type CreatedPlaylist = {
@@ -53,8 +55,12 @@ export const createSimilarPlaylist = async (
     throw new Error("Spotify could not create the playlist.")
   }
 
+  const chunks: string[][] = []
   for (let offset = 0; offset < trackUris.length; offset += PLAYLIST_TRACK_LIMIT) {
-    await playlistApi.add(playlistUri, trackUris.slice(offset, offset + PLAYLIST_TRACK_LIMIT), {
+    chunks.push(trackUris.slice(offset, offset + PLAYLIST_TRACK_LIMIT))
+  }
+  for (let index = chunks.length - 1; index >= 0; index -= 1) {
+    await playlistApi.add(playlistUri, chunks[index], {
       before: "start",
     })
   }
@@ -62,5 +68,51 @@ export const createSimilarPlaylist = async (
   return {
     uri: playlistUri,
     trackCount: trackUris.length,
+  }
+}
+
+/**
+ * Returns every track URI played in the active Similar Mix queue in playback order,
+ * starting with the original seed song and including the currently playing owned track.
+ */
+export const getSessionPlayedTrackUris = (): string[] => {
+  if (!sessionManager.isActive()) return []
+  const played = sessionManager.getPlayedUris()
+  const currentUri =
+    typeof Spicetify !== "undefined" ? (Spicetify.Player?.data?.item?.uri ?? null) : null
+  if (
+    currentUri?.startsWith("spotify:track:") &&
+    sessionManager.ownsQueueTrack(currentUri) &&
+    !sessionManager.isQuarantined(currentUri) &&
+    !played.includes(currentUri)
+  ) {
+    return uniqueTrackUris([...played, currentUri])
+  }
+  return uniqueTrackUris(played)
+}
+
+/**
+ * Creates a playlist containing every song played so far in the active Similar Mix queue
+ * without interrupting current playback.
+ */
+export const savePlayedSessionPlaylist = async (): Promise<{
+  uri: string
+  trackCount: number
+  seedTrackName: string
+}> => {
+  const seed = sessionManager.getSeed()
+  if (!sessionManager.isActive() || !seed) {
+    throw new Error("Start Similar Mix first to save played songs as a playlist.")
+  }
+
+  const playedUris = getSessionPlayedTrackUris()
+  if (playedUris.length === 0) {
+    throw new Error("No played songs are available in this queue yet.")
+  }
+
+  const playlist = await createSimilarPlaylist(seed.trackName, seed.artistName, playedUris)
+  return {
+    ...playlist,
+    seedTrackName: seed.trackName,
   }
 }

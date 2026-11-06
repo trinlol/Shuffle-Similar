@@ -21,6 +21,7 @@ export const persistActiveSession = (): void => {
   getSessionRecoveryStore().save({
     seed,
     queuedUris: sessionManager.getQueuedUris(),
+    playedUris: sessionManager.getPlayedUris(),
     position: sessionManager.getPosition(),
     recentPositiveAnchors: sessionManager.getRecentPositiveAnchors(),
     familiarityLedger: sessionManager.getFamiliarityLedger(),

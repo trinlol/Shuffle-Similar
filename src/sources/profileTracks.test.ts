@@ -4,8 +4,10 @@ import {
   fetchAllPlaylistTracks,
   fetchProfilePool,
   fetchRecentlyPlayedTracks,
+  fetchTopArtists,
   fetchTopTracks,
   PROFILE_SOURCE_TIMEOUT_MS,
+  resetProfileCaches,
 } from "./profileTracks"
 
 const seed: SeedMetadata = {
@@ -169,5 +171,94 @@ describe("profile source fallbacks", () => {
 
     await expect(pending).resolves.toHaveLength(100)
     expect(playlistGet).toHaveBeenCalledTimes(2)
+  })
+
+  it("caches fetchTopArtists across calls and falls back safely on network error", async () => {
+    resetProfileCaches()
+    let calls = 0
+    const get = vi.fn(async (url: string) => {
+      calls += 1
+      if (url.includes("short_term")) {
+        return { items: [{ uri: "spotify:artist:short1", name: "Short Artist 1" }] }
+      }
+      if (url.includes("medium_term")) {
+        return { items: [{ uri: "spotify:artist:med1", name: "Med Artist 1" }] }
+      }
+      throw new Error(`Unexpected: ${url}`)
+    })
+    vi.stubGlobal("Spicetify", { CosmosAsync: { get } })
+
+    const first = await fetchTopArtists()
+    expect(first.artistUris).toEqual(["spotify:artist:short1", "spotify:artist:med1"])
+    expect(first.artistNames).toEqual(["Short Artist 1", "Med Artist 1"])
+    expect(calls).toBe(2)
+
+    // Second call is cached for 5 minutes:
+    const second = await fetchTopArtists()
+    expect(second).toEqual(first)
+    expect(calls).toBe(2)
+
+    // Fallback on total failure:
+    resetProfileCaches()
+    get.mockRejectedValue(new Error("Network failed"))
+    const fallback = await fetchTopArtists()
+    expect(fallback).toEqual({ artistUris: [], artistNames: [] })
+  })
+
+  it("enforces a strict per-artist cap of 2 in fetchProfilePool", async () => {
+    resetProfileCaches()
+    const dominantArtistUri = "spotify:artist:dominant"
+    const soloArtistUri = "spotify:artist:solo"
+
+    vi.stubGlobal("Spicetify", {
+      URI: { fromString: (uri: string) => ({ id: uri.split(":").pop() }) },
+      CosmosAsync: {
+        get: vi.fn(async (url: string) => {
+          if (url.includes("/me/tracks")) {
+            return {
+              items: [
+                ...Array.from({ length: 5 }, (_, i) => ({
+                  track: {
+                    uri: `spotify:track:dom-${i}`,
+                    name: `Dominant Track ${i}`,
+                    is_playable: true,
+                    artists: [{ uri: dominantArtistUri, name: "Dominant Artist" }],
+                    album: { uri: "spotify:album:dom", name: "Album" },
+                  },
+                })),
+                {
+                  track: {
+                    uri: "spotify:track:solo-1",
+                    name: "Solo Track",
+                    is_playable: true,
+                    artists: [{ uri: soloArtistUri, name: "Solo Artist" }],
+                    album: { uri: "spotify:album:solo", name: "Album" },
+                  },
+                },
+              ],
+              next: null,
+            }
+          }
+          if (url.includes("/artists/")) {
+            return { genres: ["indie"] }
+          }
+          return { items: [] }
+        }),
+      },
+      Platform: {
+        RootlistAPI: {
+          getContents: vi.fn().mockResolvedValue({ items: [] }),
+        },
+        PlaylistAPI: {
+          getContents: vi.fn().mockResolvedValue({ items: [] }),
+        },
+      },
+    })
+
+    const pool = await fetchProfilePool(seed)
+    const domCount = pool.filter((track) => track.artistUri === dominantArtistUri).length
+
+    expect(domCount).toBeLessThanOrEqual(2)
+    expect(pool.some((track) => track.artistUri === soloArtistUri)).toBe(true)
   })
 })

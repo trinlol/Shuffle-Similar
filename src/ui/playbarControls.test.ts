@@ -46,12 +46,15 @@ describe("cloned playbar button sanitation", () => {
     expect(removeLegacyButtonsFromMutations([{ addedNodes }])).toBe(0)
   })
 
-  it("ignores playbar mutations unless a shuffle control was disconnected or changed", () => {
+  it("ignores playbar mutations unless a shuffle control or timeline banner was disconnected or changed", () => {
     const nodes = { length: 0, item: () => null } as unknown as NodeList
     const records = [{ addedNodes: nodes, removedNodes: nodes }]
 
     expect(playbarMutationsAffectControls(records, { isConnected: true })).toBe(false)
     expect(playbarMutationsAffectControls(records, { isConnected: false })).toBe(true)
+    expect(
+      playbarMutationsAffectControls(records, { isConnected: true }, { isConnected: false })
+    ).toBe(true)
   })
 })
 
@@ -65,6 +68,7 @@ describe("native shuffle label matching", () => {
   it("still rejects extension and smart-shuffle buttons and unrelated controls", () => {
     expect(isNativeShuffleLabel("Shuffle Similar")).toBe(false)
     expect(isNativeShuffleLabel("Better Shuffle")).toBe(false)
+    expect(isNativeShuffleLabel("Shuffle+ Queue Tracks")).toBe(false)
     expect(isNativeShuffleLabel("Enable Smart Shuffle for Similar to - July")).toBe(false)
     expect(isNativeShuffleLabel("Add to playlist")).toBe(false)
   })

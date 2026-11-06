@@ -17,13 +17,14 @@ export type ActiveSessionSnapshot = {
   savedAt: number
   seed: SeedMetadata
   queuedUris: string[]
+  playedUris?: string[]
   position: number
   recentPositiveAnchors: TrackCandidate[]
   familiarityLedger: FamiliarityClassification[]
 }
 
 export type ActiveSessionInput = Pick<ActiveSessionSnapshot, "seed" | "queuedUris" | "position"> &
-  Partial<Pick<ActiveSessionSnapshot, "recentPositiveAnchors" | "familiarityLedger">>
+  Partial<Pick<ActiveSessionSnapshot, "playedUris" | "recentPositiveAnchors" | "familiarityLedger">>
 
 const safeTrackUris = (uris: readonly string[]): string[] =>
   [
@@ -59,11 +60,15 @@ const sanitizeSnapshot = (value: unknown, now: number): ActiveSessionSnapshot | 
   if (!Array.isArray(snapshot.queuedUris)) return null
   const queuedUris = safeTrackUris(snapshot.queuedUris)
   if (queuedUris.length === 0) return null
+  const playedUris = Array.isArray(snapshot.playedUris)
+    ? safeTrackUris([snapshot.seed.uri, ...snapshot.playedUris])
+    : [snapshot.seed.uri]
   return {
     version: SESSION_SCHEMA_VERSION,
     savedAt: snapshot.savedAt,
     seed: snapshot.seed,
     queuedUris,
+    playedUris,
     position:
       typeof snapshot.position === "number" && Number.isFinite(snapshot.position)
         ? Math.max(0, Math.floor(snapshot.position))
@@ -101,6 +106,7 @@ export const createSessionRecoveryStore = (
         savedAt: now,
         seed: input.seed,
         queuedUris: input.queuedUris,
+        playedUris: input.playedUris ?? [input.seed.uri],
         position: input.position,
         recentPositiveAnchors: input.recentPositiveAnchors ?? [],
         familiarityLedger: input.familiarityLedger ?? [],

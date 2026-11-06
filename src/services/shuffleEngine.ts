@@ -1,8 +1,15 @@
+import { filterProfilePoolForSeedCoherence } from "../algorithm/genreAffinity"
 import { buildPlaylistBatch, buildTrackBatch } from "../algorithm/progressiveBlend"
 import { createQueueError } from "../diagnostics/failureReasons"
 import { recordOperation } from "../diagnostics/operationLog"
-import { disableAutoplayGuard, enableAutoplayGuard, syncKnownQueue } from "../queue/autoplayGuard"
 import {
+  disableAutoplayGuard,
+  enableAutoplayGuard,
+  isUserQueuedDetourTrack,
+  syncKnownQueue,
+} from "../queue/autoplayGuard"
+import {
+  clearUpcomingQueue,
   detachFromPlaylistContext,
   getUpcomingQueueUris,
   isAlbumContext,
@@ -19,6 +26,7 @@ import { sessionManager } from "../session/SessionManager"
 import type { SeedMetadata, TrackCandidate } from "../session/types"
 import { fetchAlbumTracks, fetchArtistDiscographyTracks } from "../sources/artistTracks"
 import { fetchAllPlaylistTracks, fetchProfilePool, fetchTopTracks } from "../sources/profileTracks"
+import { mergeCandidatesWithProvenance } from "../sources/provenance"
 import {
   enrichPlaylistTracks,
   fetchPlaylistSimilarPool,
@@ -26,10 +34,17 @@ import {
 } from "../sources/similarTracks"
 import { fetchSeedMetadata } from "../sources/trackMetadata"
 import { assertQueueCompatibility } from "./compatibility"
-import { getSessionConfig, queueUrisFromBatch, withForegroundDeadline } from "./mixBuilder"
+import {
+  collectRecentHistorySnapshot,
+  createLiveBatchPlanningOptions,
+  filterOutPreviouslyPlayed,
+  getSessionConfig,
+  queueUrisFromBatch,
+  withForegroundDeadline,
+} from "./mixBuilder"
 import { LatestMixCoordinator } from "./mixCoordinator"
 import { suppressNativeShuffle } from "./playbackEffects"
-import { prefetchNextBatch, refillQueueIfNeeded } from "./refill"
+import { prefetchNextBatch, refillQueueIfNeeded, rerankUpcomingAfterFeedback } from "./refill"
 import { shouldRecoverSession } from "./sessionRecovery"
 import {
   clearSimilarMixRecovery,
@@ -77,6 +92,7 @@ export const recoverSimilarMixSession = async (): Promise<boolean> => {
     snapshot.position,
     currentUri,
     {
+      playedUris: snapshot.playedUris,
       recentPositiveAnchors: snapshot.recentPositiveAnchors,
       familiarityLedger: snapshot.familiarityLedger,
     }
@@ -110,20 +126,63 @@ const prepareMix = async (seed: SeedMetadata, contextUri?: string | null): Promi
     const playlistTracks = await enrichPlaylistTracks(rawTracks)
     if (playlistTracks.length === 0)
       throw new Error("No playable tracks were found in this selection")
-    const [topTracks, similarPool] = await Promise.all([
+    const [topTracks, similarPool, history] = await Promise.all([
       isAlbum ? Promise.resolve([]) : fetchTopTracks(),
       fetchPlaylistSimilarPool(playlistTracks, settings, 5),
+      collectRecentHistorySnapshot({ includeSpotifyRecent: true }),
     ])
-    const selected = buildPlaylistBatch(
-      playlistTracks,
-      similarPool,
+    const exposureMultipliers = (
+      sessionManager as unknown as {
+        getExposureMultipliers?: (c: readonly TrackCandidate[]) => Map<string, number>
+      }
+    ).getExposureMultipliers?.([...similarPool, ...playlistTracks])
+    const strictPlanningOptions = createLiveBatchPlanningOptions(
+      history.uris,
+      seed.uri,
       [seed.uri],
-      topTracks,
-      settings,
-      settings.initialQueueSize,
-      0,
-      isAlbum ? "album" : "playlist"
+      history.canonicalKeys,
+      history,
+      exposureMultipliers
     )
+    const hardExclusions = [...new Set([seed.uri, ...history.uris])]
+    let selected = filterOutPreviouslyPlayed(
+      buildPlaylistBatch(
+        playlistTracks,
+        similarPool,
+        hardExclusions,
+        topTracks,
+        settings,
+        settings.initialQueueSize,
+        0,
+        isAlbum ? "album" : "playlist",
+        [],
+        strictPlanningOptions
+      ),
+      seed.uri,
+      history
+    )
+    if (selected.length === 0) {
+      const relaxedOptions = createLiveBatchPlanningOptions(
+        history.uris,
+        seed.uri,
+        [seed.uri],
+        history.canonicalKeys,
+        history,
+        exposureMultipliers
+      )
+      selected = buildPlaylistBatch(
+        playlistTracks,
+        similarPool,
+        [seed.uri],
+        topTracks,
+        settings,
+        settings.initialQueueSize,
+        0,
+        isAlbum ? "album" : "playlist",
+        [],
+        relaxedOptions
+      )
+    }
     prepared = {
       ...base,
       mode: isAlbum ? "album" : "playlist",
@@ -133,22 +192,92 @@ const prepareMix = async (seed: SeedMetadata, contextUri?: string | null): Promi
       selected,
     }
   } else if (contextUri && isArtistContext(contextUri)) {
-    const [artistTracks, similarPool] = await Promise.all([
+    let [artistTracks, similarPool, history] = await Promise.all([
       fetchArtistDiscographyTracks(contextUri),
       fetchSimilarPool(seed, settings),
+      collectRecentHistorySnapshot({ includeSpotifyRecent: true }),
     ])
     if (artistTracks.length === 0 && similarPool.length === 0) {
       throw new Error("No playable matches were found for this artist")
     }
-    const selected = buildTrackBatch(
-      seed,
-      0,
+    const exposureMultipliers = (
+      sessionManager as unknown as {
+        getExposureMultipliers?: (c: readonly TrackCandidate[]) => Map<string, number>
+      }
+    ).getExposureMultipliers?.([...similarPool, ...artistTracks])
+    const strictPlanningOptions = createLiveBatchPlanningOptions(
+      history.uris,
+      seed.uri,
       [seed.uri],
-      similarPool,
-      artistTracks,
-      settings,
-      settings.initialQueueSize
+      history.canonicalKeys,
+      history,
+      exposureMultipliers
     )
+    const hardExclusions = [...new Set([seed.uri, ...history.uris])]
+    let selected = filterOutPreviouslyPlayed(
+      buildTrackBatch(
+        seed,
+        0,
+        hardExclusions,
+        similarPool,
+        artistTracks,
+        settings,
+        settings.initialQueueSize,
+        history.uris,
+        [],
+        [],
+        strictPlanningOptions
+      ),
+      seed.uri,
+      history
+    )
+    if (selected.length < Math.min(15, settings.initialQueueSize) && history.uris.length > 0) {
+      const deepSimilar = await fetchSimilarPool(seed, settings, { deepDiscovery: true })
+      if (deepSimilar.length > 0) {
+        similarPool = mergeCandidatesWithProvenance([...similarPool, ...deepSimilar])
+        const expanded = filterOutPreviouslyPlayed(
+          buildTrackBatch(
+            seed,
+            0,
+            hardExclusions,
+            similarPool,
+            artistTracks,
+            settings,
+            settings.initialQueueSize,
+            history.uris,
+            [],
+            [],
+            strictPlanningOptions
+          ),
+          seed.uri,
+          history
+        )
+        if (expanded.length > selected.length) selected = expanded
+      }
+    }
+    if (selected.length === 0) {
+      const relaxedOptions = createLiveBatchPlanningOptions(
+        history.uris,
+        seed.uri,
+        [seed.uri],
+        history.canonicalKeys,
+        history,
+        exposureMultipliers
+      )
+      selected = buildTrackBatch(
+        seed,
+        0,
+        [seed.uri],
+        similarPool,
+        artistTracks,
+        settings,
+        settings.initialQueueSize,
+        history.uris,
+        [],
+        [],
+        relaxedOptions
+      )
+    }
     prepared = {
       ...base,
       mode: "artist",
@@ -158,22 +287,114 @@ const prepareMix = async (seed: SeedMetadata, contextUri?: string | null): Promi
       selected,
     }
   } else {
-    const [similarPool, profilePool] = await Promise.all([
+    let [similarPool, rawProfilePool, history] = await Promise.all([
       fetchSimilarPool(seed, settings),
       withForegroundDeadline(fetchProfilePool(seed), []),
+      collectRecentHistorySnapshot({ includeSpotifyRecent: true }),
     ])
+
+    const artistCounts = new Map<string, number>()
+    const artistKeysByNorm = new Map<string, string[]>()
+    for (const track of rawProfilePool) {
+      const tokens: string[] = []
+      if (track.artistUri) tokens.push(track.artistUri.trim().toLowerCase())
+      if (track.artistName) {
+        const norm = track.artistName.trim().toLowerCase().replace(/\s+/g, " ")
+        tokens.push(`name:${norm}`)
+        tokens.push(norm)
+      }
+      const primary = tokens[0]
+      if (primary) {
+        artistCounts.set(primary, (artistCounts.get(primary) ?? 0) + 1)
+        artistKeysByNorm.set(primary, tokens)
+      }
+    }
+    const derivedHabitual: string[] = []
+    for (const [primary, count] of artistCounts.entries()) {
+      if (count >= 2) {
+        const tokens = artistKeysByNorm.get(primary) ?? [primary]
+        derivedHabitual.push(...tokens)
+      }
+    }
+    if (derivedHabitual.length > 0) {
+      history = {
+        ...history,
+        habitualArtistKeys: [
+          ...new Set([...(history.habitualArtistKeys ?? []), ...derivedHabitual]),
+        ],
+      }
+    }
+
+    let profilePool = filterProfilePoolForSeedCoherence(rawProfilePool, seed, similarPool)
     if (similarPool.length === 0 && profilePool.length === 0) {
       throw new Error("No playable matches were found for this track")
     }
-    const selected = buildTrackBatch(
-      seed,
-      0,
+    const exposureMultipliers = (
+      sessionManager as unknown as {
+        getExposureMultipliers?: (c: readonly TrackCandidate[]) => Map<string, number>
+      }
+    ).getExposureMultipliers?.([...similarPool, ...profilePool])
+    const strictPlanningOptions = createLiveBatchPlanningOptions(
+      history.uris,
+      seed.uri,
       [seed.uri],
-      similarPool,
-      profilePool,
-      settings,
-      settings.initialQueueSize
+      history.canonicalKeys,
+      history,
+      exposureMultipliers
     )
+    const hardExclusions = [...new Set([seed.uri, ...history.uris])]
+    const buildStrict = (currentSimilar: TrackCandidate[], currentProfile: TrackCandidate[]) =>
+      filterOutPreviouslyPlayed(
+        buildTrackBatch(
+          seed,
+          0,
+          hardExclusions,
+          currentSimilar,
+          currentProfile,
+          settings,
+          settings.initialQueueSize,
+          [...history.uris, ...currentProfile.map((candidate) => candidate.uri)],
+          [],
+          [],
+          strictPlanningOptions
+        ),
+        seed.uri,
+        history
+      )
+
+    let selected = buildStrict(similarPool, profilePool)
+    if (selected.length < Math.min(15, settings.initialQueueSize) && history.uris.length > 0) {
+      const deepSimilar = await fetchSimilarPool(seed, settings, { deepDiscovery: true })
+      if (deepSimilar.length > 0) {
+        similarPool = mergeCandidatesWithProvenance([...similarPool, ...deepSimilar])
+        profilePool = filterProfilePoolForSeedCoherence(rawProfilePool, seed, similarPool)
+        const expanded = buildStrict(similarPool, profilePool)
+        if (expanded.length > selected.length) selected = expanded
+      }
+    }
+    if (selected.length === 0) {
+      const relaxedOptions = createLiveBatchPlanningOptions(
+        history.uris,
+        seed.uri,
+        [seed.uri],
+        history.canonicalKeys,
+        history,
+        exposureMultipliers
+      )
+      selected = buildTrackBatch(
+        seed,
+        0,
+        [seed.uri],
+        similarPool,
+        profilePool,
+        settings,
+        settings.initialQueueSize,
+        [...history.uris, ...profilePool.map((candidate) => candidate.uri)],
+        [],
+        [],
+        relaxedOptions
+      )
+    }
     prepared = {
       ...base,
       mode: "track",
@@ -189,6 +410,10 @@ const prepareMix = async (seed: SeedMetadata, contextUri?: string | null): Promi
 }
 
 const commitPreparedSession = (prepared: PreparedMix): void => {
+  const previousPlayedUris =
+    sessionManager.isActive() && sessionManager.getSeed()?.uri === prepared.seed.uri
+      ? sessionManager.getPlayedUris()
+      : []
   if ((prepared.mode === "playlist" || prepared.mode === "album") && prepared.contextUri) {
     sessionManager.startPlaylistSession(
       prepared.seed,
@@ -200,6 +425,9 @@ const commitPreparedSession = (prepared: PreparedMix): void => {
     sessionManager.startArtistSession(prepared.seed, prepared.contextUri, prepared.artistTracks)
   } else {
     sessionManager.startSession(prepared.seed)
+  }
+  if (previousPlayedUris.length > 0) {
+    sessionManager.restorePlayedUris(previousPlayedUris)
   }
   sessionManager.setPools(prepared.similarPool, prepared.profilePool)
   sessionManager.registerCandidates([
@@ -220,9 +448,37 @@ export const startShuffleSimilar = async (
   options: StartOptions = {}
 ) => {
   if (!options.buildOnly) assertQueueCompatibility()
-  await sessionManager.initializeTasteIdentity()
   const generation = options.buildOnly ? null : liveMixCoordinator.begin()
-  const seed = await fetchSeedMetadata(seedUri)
+  const isSwitchingToDifferentSeed =
+    !options.buildOnly &&
+    Boolean(
+      options.playSeed || (sessionManager.isActive() && sessionManager.getSeed()?.uri !== seedUri)
+    )
+  const existingSeed =
+    !isSwitchingToDifferentSeed &&
+    sessionManager.isActive() &&
+    sessionManager.getSeed()?.uri === seedUri &&
+    sessionManager.getSeed()?.trackName
+      ? sessionManager.getSeed()
+      : null
+  if (isSwitchingToDifferentSeed) {
+    disableAutoplayGuard()
+    sessionManager.endSession()
+    clearSimilarMixRecovery()
+    invalidatePrefetch()
+  }
+  const [, seed] = await Promise.all([
+    sessionManager.ensureTasteIdentity(),
+    existingSeed ? Promise.resolve(existingSeed) : fetchSeedMetadata(seedUri),
+    isSwitchingToDifferentSeed && generation != null
+      ? queueMutationCoordinator
+          .run(async () => {
+            if (!liveMixCoordinator.isCurrent(generation)) return false
+            return await clearUpcomingQueue()
+          })
+          .catch(() => false)
+      : Promise.resolve(false),
+  ])
   if (generation != null) liveMixCoordinator.assertCurrent(generation)
   const prepared = await prepareMix(seed, contextUri)
   if (generation != null) liveMixCoordinator.assertCurrent(generation)
@@ -237,6 +493,7 @@ export const startShuffleSimilar = async (
     invalidatePrefetch()
     sessionManager.invalidatePendingMutations()
     const currentUri = Spicetify.Player.data?.item?.uri ?? null
+    const usedNewMixTakeover = Boolean((options.replaceUpcoming && currentUri) || options.playSeed)
     const queueCommit = await queueMutationCoordinator.run(async () =>
       options.replaceUpcoming && currentUri
         ? await replaceUpcomingQueueForNewMix(currentUri, prepared.queueUris, seed.albumUri)
@@ -268,7 +525,9 @@ export const startShuffleSimilar = async (
         "queue_not_confirmed"
       )
     }
-    await detachFromPlaylistContext(seed.albumUri)
+    if (!usedNewMixTakeover) {
+      await detachFromPlaylistContext(seed.albumUri)
+    }
     commitPreparedSession(prepared)
     sessionManager.setToggleEnabled(true)
     enableAutoplayGuard()
@@ -300,13 +559,17 @@ export const buildFromContextMenu = async (seedUri: string, contextUri?: string 
 }
 
 export const reshuffleFromCurrentTrack = async () => {
-  const uri = Spicetify.Player.data?.item?.uri
-  if (!uri) {
+  const currentUri = Spicetify.Player.data?.item?.uri
+  if (!currentUri) {
     throw new Error("Play a song first, then enable Shuffle Similar")
   }
 
-  const playerContextUri = Spicetify.Player.data?.context?.uri ?? null
-  await startShuffleSimilar(uri, playerContextUri, {
+  // Enabling from the playbar builds a Similar Mix for the currently playing song itself
+  // (rather than throwing away the seed to shuffle an entire surrounding playlist/album).
+  // Refreshing an active session stays anchored to the original seed song clicked on.
+  const activeSeedUri = sessionManager.isActive() ? sessionManager.getSeed()?.uri : null
+  const activeContextUri = sessionManager.isActive() ? sessionManager.getContextUri() : null
+  await startShuffleSimilar(activeSeedUri ?? currentUri, activeContextUri, {
     playSeed: false,
     replaceUpcoming: true,
   })
@@ -325,16 +588,58 @@ export const handleSongChange = async (): Promise<"active" | "stopped" | "ignore
   if (!sessionManager.isToggleEnabled() || !sessionManager.isActive()) return "ignored"
 
   suppressNativeShuffle()
-  const observation = sessionManager.transitionToTrack(uri)
-  if (observation.type === "manual-context-exit") {
+  const isInterstitial =
+    uri === "spotify:delimiter" ||
+    uri.startsWith("spotify:ad:") ||
+    uri.startsWith("spotify:interstitial:")
+  if (!sessionManager.ownsQueueTrack(uri) && !isInterstitial) {
+    const hasOwnedTracksAhead = getUpcomingQueueUris().some((queuedUri) =>
+      sessionManager.ownsQueueTrack(queuedUri)
+    )
+    if (hasOwnedTracksAhead && isUserQueuedDetourTrack(uri)) {
+      const item = Spicetify.Player.data?.item
+      sessionManager.rememberPlayedTrack({
+        uri,
+        trackName: item?.name || item?.metadata?.title || undefined,
+        artistUri: item?.artists?.[0]?.uri || item?.metadata?.artist_uri || undefined,
+        artistName: item?.artists?.[0]?.name || item?.metadata?.artist_name || undefined,
+      })
+      const detourObservation = sessionManager.observeExternalQueuedTrack(uri)
+      if (detourObservation.type === "early-skip") {
+        invalidatePrefetch()
+        await rerankUpcomingAfterFeedback().catch(() => false)
+      }
+      await refillQueueIfNeeded()
+      void prefetchNextBatch()
+      return "active"
+    }
+
+    sessionManager.transitionToTrack(uri)
+    liveMixCoordinator.begin()
     disableAutoplayGuard()
     sessionManager.endSession()
     clearSimilarMixRecovery()
     invalidatePrefetch()
+    await queueMutationCoordinator.run(() => clearUpcomingQueue()).catch(() => false)
+    return "stopped"
+  }
+
+  const observation = sessionManager.transitionToTrack(uri)
+  if (observation.type === "manual-context-exit") {
+    liveMixCoordinator.begin()
+    disableAutoplayGuard()
+    sessionManager.endSession()
+    clearSimilarMixRecovery()
+    invalidatePrefetch()
+    await queueMutationCoordinator.run(() => clearUpcomingQueue()).catch(() => false)
     return "stopped"
   }
   sessionManager.recordTrackPlayed(uri)
-  if (observation.type === "early-skip") invalidatePrefetch()
+  persistActiveSession()
+  if (observation.type === "early-skip") {
+    invalidatePrefetch()
+    await rerankUpcomingAfterFeedback().catch(() => false)
+  }
   await refillQueueIfNeeded()
   void prefetchNextBatch()
   return "active"
@@ -342,5 +647,5 @@ export const handleSongChange = async (): Promise<"active" | "stopped" | "ignore
 
 // Public API that moved to focused modules; importers keep using ./shuffleEngine.
 export { handlePlaybackFailure, teachSimilarMixPreference } from "./playbackRecovery"
-export { refillQueueIfNeeded } from "./refill"
+export { refillQueueIfNeeded, rerankUpcomingAfterFeedback } from "./refill"
 export { clearSimilarMixRecovery } from "./sessionState"

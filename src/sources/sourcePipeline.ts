@@ -31,6 +31,7 @@ export type SourceRunOptions<T> = {
   quorum?: (values: ReadonlyArray<{ sourceId: string; value: T }>) => boolean
   onLateValue?: (value: { sourceId: string; value: T }) => void
   foregroundDeadlineMs?: number
+  keepBackgroundRunningOnQuorum?: boolean
 }
 
 type SourceHealth = {
@@ -150,7 +151,9 @@ export class SourcePipeline {
     const finishForeground = () => {
       if (foregroundResolved) return
       foregroundResolved = true
-      pendingLaunches.abort()
+      if (!options.keepBackgroundRunningOnQuorum || !options.onLateValue) {
+        pendingLaunches.abort()
+      }
       if (foregroundTimer) clearTimeout(foregroundTimer)
       resolveForeground?.(snapshotResult())
     }
@@ -160,8 +163,9 @@ export class SourcePipeline {
       finishForeground()
     }
 
+    const allowBackground = Boolean(options.keepBackgroundRunningOnQuorum && options.onLateValue)
     const worker = async () => {
-      while (nextIndex < tasks.length && !foregroundResolved) {
+      while (nextIndex < tasks.length && (!foregroundResolved || allowBackground)) {
         const index = nextIndex
         nextIndex += 1
         const task = tasks[index]
@@ -179,7 +183,7 @@ export class SourcePipeline {
 
         const acquired = await this.acquireCapacity(pendingLaunches.signal)
         if (!acquired) break
-        if (foregroundResolved) {
+        if (foregroundResolved && !allowBackground) {
           this.releaseCapacity()
           break
         }

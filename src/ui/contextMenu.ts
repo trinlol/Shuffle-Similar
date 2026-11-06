@@ -36,15 +36,21 @@ const runContextAction = (work: () => Promise<void>, fallbackMessage: string) =>
       .finally(() => {
         contextActionBusy = false
       })
-  }, 100)
+  }, 0)
 }
 
 const runPlayWithShuffleSimilar = (uris: string[]) => {
   Spicetify.showNotification(COPY.buildingMix)
-  runContextAction(
-    () => handlePlayWithShuffleSimilar(uris),
-    "Similar Mix could not start. Try another selection."
-  )
+  setTimeout(() => {
+    handlePlayWithShuffleSimilar(uris).catch((error) => {
+      if (error instanceof Error && error.name === "StaleMixBuildError") return
+      console.error("[Shuffle Similar]", error)
+      Spicetify.showNotification(
+        formatContextActionError(error, "Similar Mix could not start. Try another selection."),
+        true
+      )
+    })
+  }, 0)
 }
 
 const runCreateSimilarPlaylist = (uris: string[]) => {

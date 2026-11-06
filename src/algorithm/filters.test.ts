@@ -100,8 +100,8 @@ describe("automatic recommendation scoring", () => {
     expect(settings.initialQueueSize).toBe(50)
     expect(settings.deprioritizePopular).toBe(false)
     expect(getBlendWeights(4, settings)).toEqual({ similarWeight: 1, profileWeight: 0 })
-    expect(getBlendWeights(5, settings)).toEqual({ similarWeight: 0.7, profileWeight: 0.3 })
-    expect(getBlendWeights(20, settings)).toEqual({ similarWeight: 0.2, profileWeight: 0.8 })
+    expect(getBlendWeights(5, settings)).toEqual({ similarWeight: 0.8, profileWeight: 0.2 })
+    expect(getBlendWeights(20, settings)).toEqual({ similarWeight: 0.65, profileWeight: 0.35 })
   })
 
   it("learns an early skip but not a substantially played track", () => {

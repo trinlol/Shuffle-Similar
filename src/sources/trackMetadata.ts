@@ -2,9 +2,32 @@ import type { SeedMetadata, TrackCandidate } from "../session/types"
 import { getMarket, isWebApiTrackPlayable } from "../utils/playability"
 import { getUriId } from "../utils/uri"
 import { attachSourceProvenance } from "./provenance"
-import { optionalSpotifyCapabilities, runWithTimeout } from "./spotifyApiAdapter"
+import { BoundedCache, optionalSpotifyCapabilities, runWithTimeout } from "./spotifyApiAdapter"
 
 const SOURCE_TIMEOUT_MS = 6_000
+const ARTIST_GENRE_CONCURRENCY = 4
+const artistGenreCache = new BoundedCache<string, string[]>(1024)
+const inFlightArtistGenres = new Map<string, Promise<string[]>>()
+let artistGenresEndpointBlocked = false
+
+export const resetArtistGenreCache = (): void => {
+  artistGenreCache.clear()
+  inFlightArtistGenres.clear()
+  artistGenresEndpointBlocked = false
+}
+
+export const getArtistGenreCacheSize = (): number => artistGenreCache.size
+
+const isBlockedStatus = (error: unknown): boolean => {
+  if (typeof error !== "object" || error === null) return false
+  const record = error as {
+    status?: unknown
+    statusCode?: unknown
+    response?: { status?: unknown }
+  }
+  const code = record.status ?? record.statusCode ?? record.response?.status
+  return code === 403 || code === 404 || code === 405 || code === 410
+}
 
 const parseYear = (value: unknown): number | undefined => {
   if (typeof value === "number" && Number.isFinite(value)) return value
@@ -34,17 +57,100 @@ export const candidateFromUri = (
     sourceId
   )
 
-const fetchArtistGenres = async (artistId: string): Promise<string[]> => {
+export const fetchArtistGenres = async (artistId: string): Promise<string[]> => {
   if (!artistId) return []
-  try {
-    const artist = await runWithTimeout(
-      () => Spicetify.CosmosAsync.get(`https://api.spotify.com/v1/artists/${artistId}`),
-      SOURCE_TIMEOUT_MS
-    )
-    return (artist?.genres ?? []).filter((genre: string) => typeof genre === "string")
-  } catch {
-    return []
+  const cached = artistGenreCache.get(artistId)
+  if (cached) return cached
+  if (artistGenresEndpointBlocked) return []
+
+  const pending = inFlightArtistGenres.get(artistId)
+  if (pending) return await pending
+
+  const request = (async (): Promise<string[]> => {
+    try {
+      const artist = await runWithTimeout(
+        () => Spicetify.CosmosAsync.get(`https://api.spotify.com/v1/artists/${artistId}`),
+        SOURCE_TIMEOUT_MS
+      )
+      const genres = (artist?.genres ?? []).filter((genre: string) => typeof genre === "string")
+      artistGenreCache.set(artistId, genres)
+      return genres
+    } catch (error) {
+      if (isBlockedStatus(error)) {
+        artistGenresEndpointBlocked = true
+      }
+      return []
+    } finally {
+      inFlightArtistGenres.delete(artistId)
+    }
+  })()
+
+  inFlightArtistGenres.set(artistId, request)
+  return await request
+}
+
+export const enrichCandidateArtistGenres = async (
+  candidates: readonly TrackCandidate[],
+  maxUncachedArtists = 18
+): Promise<TrackCandidate[]> => {
+  if (candidates.length === 0) return []
+
+  if (!artistGenresEndpointBlocked && maxUncachedArtists > 0) {
+    const uncachedArtistIds: string[] = []
+    const seen = new Set<string>()
+    for (const candidate of candidates) {
+      if (candidate.genres?.length) continue
+      const artistId = candidate.artistUri ? getUriId(candidate.artistUri) : ""
+      if (!artistId || seen.has(artistId) || artistGenreCache.has(artistId)) continue
+      seen.add(artistId)
+      uncachedArtistIds.push(artistId)
+      if (uncachedArtistIds.length >= maxUncachedArtists) break
+    }
+
+    if (uncachedArtistIds.length > 0) {
+      const probeArtist = async (artistId: string): Promise<boolean> => {
+        try {
+          const artist = await runWithTimeout(
+            () => Spicetify.CosmosAsync.get(`https://api.spotify.com/v1/artists/${artistId}`),
+            SOURCE_TIMEOUT_MS
+          )
+          const genres = (artist?.genres ?? []).filter((genre: string) => typeof genre === "string")
+          artistGenreCache.set(artistId, genres)
+          return true
+        } catch {
+          return false
+        }
+      }
+
+      const firstOk = await probeArtist(uncachedArtistIds[0])
+      if (!firstOk) {
+        artistGenresEndpointBlocked = true
+      } else if (uncachedArtistIds.length > 1) {
+        const rest = uncachedArtistIds.slice(1)
+        let nextIndex = 0
+        const worker = async (): Promise<void> => {
+          while (nextIndex < rest.length) {
+            const index = nextIndex
+            nextIndex += 1
+            await probeArtist(rest[index])
+          }
+        }
+        const workers = Math.min(ARTIST_GENRE_CONCURRENCY, rest.length)
+        await Promise.all(Array.from({ length: workers }, () => worker()))
+      }
+    }
   }
+
+  return candidates.map((candidate) => {
+    if (candidate.genres?.length) return candidate
+    const artistId = candidate.artistUri ? getUriId(candidate.artistUri) : ""
+    const cached = artistId ? artistGenreCache.get(artistId) : undefined
+    if (!cached?.length) return candidate
+    return {
+      ...candidate,
+      genres: cached,
+    }
+  })
 }
 
 const fetchTrackDetails = async (trackId: string) => {
@@ -100,14 +206,23 @@ export const fetchSeedMetadata = async (uri: string): Promise<SeedMetadata> => {
   const base = getSeedMetadataFromPlayer(uri)
 
   try {
-    const track = await fetchTrackDetails(base.trackId)
+    const baseArtistId = base.artistUri ? getUriId(base.artistUri) : ""
+    const [track, featureResult, preloadedGenres] = await Promise.all([
+      fetchTrackDetails(base.trackId),
+      optionalSpotifyCapabilities.run("audio-features", () =>
+        Spicetify.CosmosAsync.get(`https://api.spotify.com/v1/audio-features/${base.trackId}`)
+      ),
+      baseArtistId ? fetchArtistGenres(baseArtistId) : Promise.resolve<string[] | null>(null),
+    ])
     if (!track) return enrichSeedMetadata(base)
     const artist = track?.artists?.[0]
     const artistId = artist?.id ?? getUriId(artist?.uri ?? "")
-    const genres = artistId ? await fetchArtistGenres(artistId) : []
-    const featureResult = await optionalSpotifyCapabilities.run("audio-features", () =>
-      Spicetify.CosmosAsync.get(`https://api.spotify.com/v1/audio-features/${base.trackId}`)
-    )
+    const genres =
+      preloadedGenres !== null && (!artistId || artistId === baseArtistId)
+        ? preloadedGenres
+        : artistId
+          ? await fetchArtistGenres(artistId)
+          : []
     const features = featureResult.status === "ok" ? featureResult.value : null
 
     return enrichSeedMetadata({
@@ -135,6 +250,7 @@ export const fetchSeedMetadata = async (uri: string): Promise<SeedMetadata> => {
 
 export const enrichSeedMetadata = async (seed: SeedMetadata): Promise<SeedMetadata> => {
   if (!seed.albumUri) return seed
+  if (seed.albumName && seed.releaseYear != null) return seed
 
   try {
     const { queryAlbumTracks } = Spicetify.GraphQL.Definitions

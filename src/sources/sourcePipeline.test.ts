@@ -208,4 +208,29 @@ describe("SourcePipeline", () => {
     await vi.waitFor(() => expect(lateValues).toEqual([{ sourceId: "slow", value: ["late"] }]))
     vi.useRealTimers()
   })
+
+  it("keeps background tasks running and delivers late values when keepBackgroundRunningOnQuorum is true", async () => {
+    const pipeline = new SourcePipeline({ timeoutMs: 1_000, maxConcurrency: 1 })
+    const lateValues: Array<{ sourceId: string; value: string[] }> = []
+
+    const foreground = await pipeline.run(
+      [
+        { id: "task1", run: async () => ["first"] },
+        { id: "task2", run: async () => ["second"] },
+        { id: "task3", run: async () => ["third"] },
+      ],
+      {
+        quorum: (values) => values.some(({ sourceId }) => sourceId === "task1"),
+        keepBackgroundRunningOnQuorum: true,
+        onLateValue: (value) => lateValues.push(value),
+      }
+    )
+
+    expect(foreground.values).toEqual([{ sourceId: "task1", value: ["first"] }])
+    await vi.waitFor(() => expect(lateValues).toHaveLength(2))
+    expect(lateValues).toEqual([
+      { sourceId: "task2", value: ["second"] },
+      { sourceId: "task3", value: ["third"] },
+    ])
+  })
 })

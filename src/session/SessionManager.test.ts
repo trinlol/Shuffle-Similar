@@ -223,4 +223,76 @@ describe("SessionManager v2 invariants", () => {
       second.uri,
     ])
   })
+
+  it("retains seen track URIs and canonical keys across endSession and consecutive queues while isolating accounts", async () => {
+    memory.clear()
+    const cosmosGet = vi.fn(async () => ({ account_id: "account-seen-a" }))
+    ;(
+      globalThis as unknown as {
+        Spicetify: { CosmosAsync: { get: typeof cosmosGet } }
+      }
+    ).Spicetify.CosmosAsync = { get: cosmosGet }
+    await sessionManager.initializeTasteIdentity()
+
+    const playedInQueueOne: TrackCandidate = {
+      uri: "spotify:track:played-q1",
+      trackName: "I Love You, I'm Sorry - Single Version",
+      artistUri: "spotify:artist:gracie",
+      artistName: "Gracie Abrams",
+    }
+    sessionManager.startSession(seed)
+    sessionManager.registerCandidates([playedInQueueOne])
+    sessionManager.setQueuedUris([playedInQueueOne.uri])
+    expect(sessionManager.recordTrackPlayed(playedInQueueOne.uri)).toBe(true)
+
+    sessionManager.endSession()
+
+    expect(sessionManager.getSeenTrackUris()).toContain(seed.uri)
+    expect(sessionManager.getSeenTrackUris()).toContain(playedInQueueOne.uri)
+    expect(sessionManager.getSeenCanonicalKeys()).toContain(
+      "i love you i m sorry::name:gracie abrams"
+    )
+
+    // Switching to another account does not leak seen tracks or canonical keys:
+    cosmosGet.mockResolvedValue({ account_id: "account-seen-b" })
+    await sessionManager.initializeTasteIdentity()
+    expect(sessionManager.getSeenTrackUris()).toEqual([])
+    expect(sessionManager.getSeenCanonicalKeys()).toEqual([])
+  })
+
+  it("bounds candidateRegistry and playedUris during marathon sessions while preserving seed and active queue tracks", () => {
+    sessionManager.startSession(seed)
+    const protectedQueued = "spotify:track:protected-queued"
+    sessionManager.registerCandidates([
+      { uri: protectedQueued, trackName: "Protected Queued", artistUri: "spotify:artist:pq" },
+    ])
+    sessionManager.setQueuedUris([protectedQueued])
+
+    const batch: TrackCandidate[] = []
+    for (let i = 0; i < 2_400; i += 1) {
+      batch.push({
+        uri: `spotify:track:cand-${i}`,
+        trackName: `Candidate ${i}`,
+        artistUri: `spotify:artist:cand-${i}`,
+      })
+    }
+    sessionManager.registerCandidates(batch)
+
+    const registered = sessionManager.getRegisteredCandidates()
+    expect(registered.length).toBeLessThanOrEqual(2_000)
+    expect(sessionManager.getCandidate(seed.uri)).toEqual(seed)
+    expect(sessionManager.getCandidate(protectedQueued)?.trackName).toBe("Protected Queued")
+    expect(sessionManager.getCandidate("spotify:track:cand-2399")?.trackName).toBe("Candidate 2399")
+    expect(sessionManager.getCandidate("spotify:track:cand-0")).toBeUndefined()
+
+    const playedOverflow: string[] = []
+    for (let i = 0; i < 1_250; i += 1) {
+      playedOverflow.push(`spotify:track:played-${i}`)
+    }
+    sessionManager.restorePlayedUris(playedOverflow)
+    const played = sessionManager.getPlayedUris()
+    expect(played).toHaveLength(1_000)
+    expect(played[0]).toBe(seed.uri)
+    expect(played[played.length - 1]).toBe("spotify:track:played-1249")
+  })
 })

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import type { SeedMetadata } from "../session/types"
+import type { SeedMetadata, TrackCandidate } from "../session/types"
 
 /**
  * Behavioural coverage for the queue orchestrator.
@@ -26,14 +26,26 @@ const candidate = (id: string) => ({
 })
 
 /** Pool the mocked planner draws from; each test sets the batch it wants. */
-let plannedBatch: ReturnType<typeof candidate>[] = []
+let plannedBatch: TrackCandidate[] = []
 
 const appendToQueue = vi.fn(async (_tracks: { uri: string }[]) => undefined)
+const clearUpcoming = vi.fn(async () => {
+  upcomingQueueUris = []
+  return true
+})
 const replaceUpcoming = vi.fn(async (_current: string | null | undefined, uris: string[]) => ({
   requestedUris: uris,
   actualUris: uris,
   verified: true,
 }))
+const playSeedAndQueueMock = vi.fn(async (_seedUri: string, uris: string[]) => {
+  upcomingQueueUris = [...uris]
+  return {
+    requestedUris: uris,
+    actualUris: uris,
+    verified: true,
+  }
+})
 let upcomingQueueUris: string[] = []
 
 vi.mock("../algorithm/progressiveBlend", () => ({
@@ -52,6 +64,7 @@ vi.mock("../sources/profileTracks", () => ({
   fetchProfilePool: async () => [],
   fetchAllPlaylistTracks: async () => [],
   fetchTopTracks: async () => [],
+  fetchRecentlyPlayedTracks: async () => [],
 }))
 
 vi.mock("../sources/artistTracks", () => ({
@@ -71,6 +84,7 @@ vi.mock("../utils/playability", () => ({
 
 vi.mock("../queue/queueManager", () => ({
   appendTracksToQueue: (tracks: { uri: string }[]) => appendToQueue(tracks),
+  clearUpcomingQueue: () => clearUpcoming(),
   replaceUpcomingQueue: (current: string | null | undefined, uris: string[]) =>
     replaceUpcoming(current, uris),
   replaceUpcomingQueueForNewMix: (current: string | null | undefined, uris: string[]) =>
@@ -80,7 +94,7 @@ vi.mock("../queue/queueManager", () => ({
   getUpcomingCount: () => upcomingQueueUris.length,
   getUpcomingQueueUris: () => [...upcomingQueueUris],
   detachFromPlaylistContext: async () => undefined,
-  playSeedAndQueue: async () => ({ requestedUris: [], actualUris: [], verified: true }),
+  playSeedAndQueue: (seedUri: string, uris: string[]) => playSeedAndQueueMock(seedUri, uris),
   resolveShuffleSimilarPlaybackContext: async () => null,
   shuffleUpcomingInPlace: async () => true,
   isPlaylistContext: () => false,
@@ -94,10 +108,12 @@ import { disableAutoplayGuard, enableAutoplayGuard, syncKnownQueue } from "../qu
 import { sessionManager } from "../session/SessionManager"
 import { queueMutationCoordinator } from "./sessionState"
 import {
+  buildFromContextMenu,
   handlePlaybackFailure,
   handleSongChange,
   refillQueueIfNeeded,
   reshuffleFromCurrentTrack,
+  startFromContextMenu,
 } from "./shuffleEngine"
 
 const localStorage = new Map<string, string>()
@@ -105,10 +121,32 @@ const playerNext = vi.fn()
 const showNotification = vi.fn()
 
 /** Points Spicetify.Player at `uri` with the given playback progress. */
-const setNowPlaying = (uri: string | null, progressMs = 0) => {
+const setNowPlaying = (
+  uri: string | null,
+  progressMs = 0,
+  options: { provider?: string; contextUri?: string | null } = {}
+) => {
   ;(globalThis as unknown as { Spicetify: unknown }).Spicetify = {
     Player: {
-      data: uri ? { item: { uri }, isPaused: false, isBuffering: false } : undefined,
+      data: uri
+        ? {
+            item: {
+              uri,
+              ...(options.provider
+                ? {
+                    provider: options.provider,
+                    metadata: {
+                      provider: options.provider,
+                      is_queued: String(options.provider === "queue"),
+                    },
+                  }
+                : {}),
+            },
+            ...(options.contextUri ? { context: { uri: options.contextUri } } : {}),
+            isPaused: false,
+            isBuffering: false,
+          }
+        : undefined,
       getProgress: () => progressMs,
       getDuration: () => 200_000,
       getShuffle: () => false,
@@ -130,7 +168,9 @@ beforeEach(() => {
   upcomingQueueUris = []
   localStorage.clear()
   appendToQueue.mockClear()
+  clearUpcoming.mockClear()
   replaceUpcoming.mockClear()
+  playSeedAndQueueMock.mockClear()
   playerNext.mockClear()
   showNotification.mockClear()
   clearOperations()
@@ -239,17 +279,272 @@ describe("handleSongChange", () => {
     expect(sessionManager.isActive()).toBe(true)
   })
 
-  it("ends the session and clears recovery when the listener leaves the mix", async () => {
+  it("ends the session, clears recovery, and scraps the upcoming queue when the listener clicks a song not in the mix", async () => {
     const owned = candidate("owned")
     sessionManager.startSession(seed)
     sessionManager.setToggleEnabled(true)
     sessionManager.registerCandidates([owned])
     sessionManager.setQueuedUris([owned.uri])
+    upcomingQueueUris = [owned.uri]
     setNowPlaying("spotify:track:foreign")
 
     expect(await handleSongChange()).toBe("stopped")
     expect(sessionManager.isActive()).toBe(false)
+    expect(clearUpcoming).toHaveBeenCalledTimes(1)
+    expect(upcomingQueueUris).toEqual([])
     expect(localStorage.get("shuffleSimilar:activeSession:v1")).toBeUndefined()
+  })
+
+  it("scraps the upcoming queue even if the listener clicks a foreign song right after a detour track", async () => {
+    const [ownedOne, ownedTwo] = [candidate("owned-1"), candidate("owned-2")]
+    sessionManager.startSession(seed)
+    sessionManager.setToggleEnabled(true)
+    sessionManager.registerCandidates([ownedOne, ownedTwo])
+    sessionManager.setQueuedUris([ownedOne.uri, ownedTwo.uri])
+    upcomingQueueUris = [ownedOne.uri, ownedTwo.uri]
+
+    // First, play an "Add to queue" detour track (kept in queue).
+    setNowPlaying("spotify:track:detour-queued", 0, { provider: "queue" })
+    expect(await handleSongChange()).toBe("active")
+    expect(clearUpcoming).not.toHaveBeenCalled()
+
+    // Next, click directly on a completely different song not in the queue (not provider="queue").
+    setNowPlaying("spotify:track:clicked-outside-song", 0, { provider: "context" })
+    expect(await handleSongChange()).toBe("stopped")
+    expect(sessionManager.isActive()).toBe(false)
+    expect(clearUpcoming).toHaveBeenCalledTimes(1)
+    expect(upcomingQueueUris).toEqual([])
+  })
+
+  it("clears the previous session and queue when starting Play Similar Shuffle on a different song", async () => {
+    const [oldOne, oldTwo] = [candidate("old-1"), candidate("old-2")]
+    sessionManager.startSession(seed)
+    sessionManager.setToggleEnabled(true)
+    sessionManager.registerCandidates([oldOne, oldTwo])
+    sessionManager.setQueuedUris([oldOne.uri, oldTwo.uri])
+    upcomingQueueUris = [oldOne.uri, oldTwo.uri]
+
+    setNowPlaying("spotify:track:new-seed")
+    const runtime = (globalThis as unknown as { Spicetify: Record<string, unknown> }).Spicetify
+    runtime.Platform = {
+      PlayerAPI: {
+        clearQueue: async () => undefined,
+        addToQueue: async () => undefined,
+        play: async () => undefined,
+      },
+    }
+    const [newOne, newTwo] = [candidate("new-1"), candidate("new-2")]
+    plannedBatch = [newOne, newTwo]
+
+    await startFromContextMenu("spotify:track:new-seed")
+
+    expect(clearUpcoming).toHaveBeenCalledTimes(1)
+    expect(playSeedAndQueueMock).toHaveBeenCalledWith("spotify:track:new-seed", [
+      newOne.uri,
+      newTwo.uri,
+    ])
+    expect(sessionManager.isActive()).toBe(true)
+    expect(sessionManager.getSeed()?.uri).toBe("spotify:track:new-seed")
+    expect(sessionManager.getQueuedUris()).toEqual([newOne.uri, newTwo.uri])
+  })
+
+  it("allows a manually queued detour track without ending or hijacking the original seed mix", async () => {
+    const gracieSeed: SeedMetadata = {
+      uri: "spotify:track:gracie-here-you-come",
+      trackId: "gracie-here-you-come",
+      trackName: "Here You Come, There You Go",
+      artistName: "Gracie Abrams",
+      artistUri: "spotify:artist:gracie",
+      genres: ["indie pop", "singer-songwriter"],
+    }
+    const [gracieNextOne, gracieNextTwo] = [
+      candidate("gracie-similar-1"),
+      candidate("gracie-similar-2"),
+    ]
+    sessionManager.startSession(gracieSeed)
+    sessionManager.setToggleEnabled(true)
+    sessionManager.registerCandidates([gracieNextOne, gracieNextTwo])
+    sessionManager.setQueuedUris([gracieNextOne.uri, gracieNextTwo.uri])
+    upcomingQueueUris = [gracieNextOne.uri, gracieNextTwo.uri]
+    plannedBatch = [candidate("gracie-refill-1"), candidate("gracie-refill-2")]
+
+    // Listener clicked "Add to queue" on Pardyalone while listening to Gracie Abrams.
+    const detourUri = "spotify:track:pardyalone-tattoos"
+    setNowPlaying(detourUri, 0, { provider: "queue" })
+
+    expect(await handleSongChange()).toBe("active")
+    expect(sessionManager.isActive()).toBe(true)
+    expect(sessionManager.getSeed()?.uri).toBe(gracieSeed.uri)
+    expect(sessionManager.ownsQueueTrack(detourUri)).toBe(false)
+    expect(sessionManager.getRecentPositiveAnchors().map((track) => track.uri)).not.toContain(
+      detourUri
+    )
+
+    // After the detour song finishes, playback returns to the owned Gracie Abrams mix.
+    sessionManager.recordProgress(190_000, 200_000)
+    setNowPlaying(gracieNextOne.uri, 0, { provider: "queue" })
+    upcomingQueueUris = [gracieNextTwo.uri]
+
+    expect(await handleSongChange()).toBe("active")
+    expect(sessionManager.getSeed()?.uri).toBe(gracieSeed.uri)
+    expect(sessionManager.getPlayedUris()).toContain(gracieNextOne.uri)
+    expect(sessionManager.getPlayedUris()).not.toContain(detourUri)
+    expect(sessionManager.getRecentPositiveAnchors().map((track) => track.uri)).not.toContain(
+      detourUri
+    )
+  })
+
+  it("anchors playbar enablement to the clicked track even inside a playlist context and refreshes from the original seed", async () => {
+    setNowPlaying("spotify:track:gracie-seed", 0, {
+      contextUri: "spotify:playlist:big-mixed-playlist",
+    })
+    const runtime = (globalThis as unknown as { Spicetify: Record<string, unknown> }).Spicetify
+    runtime.Platform = {
+      PlayerAPI: {
+        clearQueue: async () => undefined,
+        addToQueue: async () => undefined,
+        play: async () => undefined,
+      },
+    }
+    plannedBatch = [candidate("gracie-a"), candidate("gracie-b")]
+
+    await reshuffleFromCurrentTrack()
+
+    expect(sessionManager.isActive()).toBe(true)
+    expect(sessionManager.isPlaylistSession()).toBe(false)
+    expect(sessionManager.getSeed()?.uri).toBe("spotify:track:gracie-seed")
+
+    // Later in the session (or during a detour track), refreshing keeps the original seed.
+    setNowPlaying("spotify:track:gracie-a", 45_000, {
+      contextUri: "spotify:album:detached-album",
+    })
+    const refreshedRuntime = (globalThis as unknown as { Spicetify: Record<string, unknown> })
+      .Spicetify
+    refreshedRuntime.Platform = runtime.Platform
+    plannedBatch = [candidate("gracie-c"), candidate("gracie-d")]
+
+    await reshuffleFromCurrentTrack()
+
+    expect(sessionManager.getSeed()?.uri).toBe("spotify:track:gracie-seed")
+    expect(sessionManager.isPlaylistSession()).toBe(false)
+  })
+
+  it("never puts any previously played songs into a newly started queue across sessions, skips, or alternate deluxe URIs", async () => {
+    // 1. User plays songs normally while Similar Mix is OFF:
+    sessionManager.rememberPlayedTrack({
+      uri: "spotify:track:passive-off-1",
+      trackName: "Risk",
+      artistUri: "spotify:artist:gracie",
+      artistName: "Gracie Abrams",
+    })
+
+    // 2. Start Queue #1 and play/skip through 35 tracks (exceeding the old 25-track slice):
+    const queueOnePlayed = Array.from({ length: 35 }, (_, i) => ({
+      uri: `spotify:track:q1-played-${i}`,
+      trackName: `Played Song ${i}`,
+      artistUri: `spotify:artist:q1-artist-${i}`,
+      artistName: `Played Artist ${i}`,
+    }))
+    const unplayedInQ1 = candidate("q1-never-reached")
+
+    setNowPlaying("spotify:track:seed-one")
+    const runtime = (globalThis as unknown as { Spicetify: Record<string, unknown> }).Spicetify
+    runtime.Platform = {
+      PlayerAPI: {
+        clearQueue: async () => undefined,
+        addToQueue: async () => undefined,
+        play: async () => undefined,
+      },
+    }
+    plannedBatch = [...queueOnePlayed, unplayedInQ1]
+    await startFromContextMenu("spotify:track:seed-one")
+
+    // Advance through all 35 tracks in Queue #1 (even quick <1s skips without confirmPlayback!):
+    for (let i = 0; i < queueOnePlayed.length; i += 1) {
+      upcomingQueueUris = [...queueOnePlayed.slice(i + 1).map((t) => t.uri), unplayedInQ1.uri]
+      setNowPlaying(queueOnePlayed[i].uri, 300)
+      ;(
+        globalThis as unknown as {
+          Spicetify: Record<string, unknown>
+        }
+      ).Spicetify.Platform = runtime.Platform
+      await handleSongChange()
+    }
+
+    // End Queue #1 completely (e.g. user clicked a brand-new song outside the mix):
+    sessionManager.endSession()
+    expect(sessionManager.isActive()).toBe(false)
+
+    // 3. Also simulate desktop Spotify previousItems & Queue.prevTracks holding another played song:
+    setNowPlaying("spotify:track:seed-two")
+    const nextRuntime = (
+      globalThis as unknown as {
+        Spicetify: {
+          Player: { data: Record<string, unknown> }
+          Queue?: unknown
+          Platform?: unknown
+        }
+      }
+    ).Spicetify
+    nextRuntime.Platform = runtime.Platform
+    nextRuntime.Player.data.previousItems = [
+      {
+        uri: "spotify:track:desktop-prev-1",
+        name: "Blowing Smoke",
+        artists: [{ uri: "spotify:artist:gracie", name: "Gracie Abrams" }],
+      },
+    ]
+    nextRuntime.Queue = {
+      prevTracks: [
+        {
+          contextTrack: {
+            uri: "spotify:track:queue-prev-1",
+            metadata: {
+              title: "Tough Love",
+              artist_uri: "spotify:artist:gracie",
+              artist_name: "Gracie Abrams",
+            },
+          },
+        },
+      ],
+    }
+
+    // 4. Start brand-new Queue #2 where the pool contains ALL 35 played tracks from Queue #1,
+    // Queue #1's seed, passive/desktop/queue previous tracks, alternate Deluxe/Remaster URIs of
+    // played songs, and ONLY 6 genuinely unplayed songs (below the old <10 backfill threshold!):
+    const freshSix = Array.from({ length: 6 }, (_, i) => ({
+      uri: `spotify:track:brand-new-${i}`,
+      trackName: `Brand New ${i}`,
+      artistUri: `spotify:artist:new-${i}`,
+      artistName: `New Artist ${i}`,
+    }))
+    plannedBatch = [
+      { uri: "spotify:track:seed-one", artistUri: "spotify:artist:seed" },
+      { uri: "spotify:track:passive-off-1", artistUri: "spotify:artist:gracie" },
+      {
+        uri: "spotify:track:risk-deluxe-reissue",
+        trackName: "Risk (Deluxe)",
+        artistUri: "spotify:artist:gracie",
+        artistName: "Gracie Abrams",
+      },
+      {
+        uri: "spotify:track:blowing-smoke-remaster",
+        trackName: "Blowing Smoke - Single Version",
+        artistName: "Gracie Abrams",
+      },
+      {
+        uri: "spotify:track:tough-love-deluxe",
+        trackName: "Tough Love (Deluxe Edition)",
+        artistUri: "spotify:artist:gracie",
+      },
+      ...queueOnePlayed,
+      ...freshSix,
+    ]
+
+    const built = await buildFromContextMenu("spotify:track:seed-two")
+
+    // Strictly ONLY the 6 unplayed tracks are queued — zero previously played tracks or alternate URIs!
+    expect(built.queueUris).toEqual(freshSix.map((track) => track.uri))
   })
 })
 

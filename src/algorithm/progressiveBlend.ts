@@ -12,6 +12,19 @@ export const getBlendWeights = (position: number, settings: SmartConfig) => {
   }
 }
 
+export type BatchPlanningOptions = {
+  recentHistoryUris?: readonly string[]
+  excludedCanonicalKeys?: readonly string[]
+  queueTailUris?: readonly string[]
+  rngSeed?: string | number
+  explorationBand?: number
+  explorationTemperature?: number
+  habitualArtistKeys?: ReadonlySet<string>
+  recentArtistKeys?: readonly string[]
+  topTrackUris?: ReadonlySet<string>
+  exposureMultipliers?: ReadonlyMap<string, number>
+}
+
 export const buildTrackBatch = (
   seed: SeedMetadata,
   position: number,
@@ -22,9 +35,9 @@ export const buildTrackBatch = (
   count: number,
   familiarUris: readonly string[] = sessionPlayedUris,
   referenceTracks: TrackCandidate[] = [],
-  discoveryHistory: readonly boolean[] = []
+  discoveryHistory: readonly boolean[] = [],
+  planningOptions: BatchPlanningOptions = {}
 ): TrackCandidate[] => {
-  const excludeEarlyArtist = settings.excludeSeedArtistEarly && position <= 4
   const profileIsSeedDiscography =
     profilePool.length > 0 &&
     profilePool.every(
@@ -35,10 +48,26 @@ export const buildTrackBatch = (
   let similar = dedupeCandidates(filterPlayableCandidates(similarPool))
   let profile = dedupeCandidates(filterPlayableCandidates(profilePool))
 
-  if (excludeEarlyArtist) {
+  if (settings.excludeSeedArtistEarly && !profileIsSeedDiscography) {
     similar = excludeArtist(similar, seed.artistUri, seed.artistName)
-    if (!profileIsSeedDiscography) {
+    if (position <= 10) {
       profile = excludeArtist(profile, seed.artistUri, seed.artistName)
+    } else {
+      let seedArtistCount = 0
+      profile = profile.filter((candidate) => {
+        const isSeedArtist =
+          Boolean(seed.artistUri && candidate.artistUri === seed.artistUri) ||
+          Boolean(
+            seed.artistName &&
+              candidate.artistName?.trim().toLowerCase() === seed.artistName.trim().toLowerCase()
+          )
+        if (!isSeedArtist) return true
+        if (seedArtistCount < 1) {
+          seedArtistCount += 1
+          return true
+        }
+        return false
+      })
     }
   }
 
@@ -50,13 +79,22 @@ export const buildTrackBatch = (
       { candidates: profile, source: "profile-library", family: "profile", weight: 0.9 },
     ],
     excludedUris: sessionPlayedUris,
-    queueTailUris: sessionPlayedUris,
+    excludedCanonicalKeys: planningOptions.excludedCanonicalKeys,
+    queueTailUris: planningOptions.queueTailUris ?? sessionPlayedUris,
+    recentHistoryUris: planningOptions.recentHistoryUris,
+    habitualArtistKeys: planningOptions.habitualArtistKeys,
+    recentArtistKeys: planningOptions.recentArtistKeys,
+    topTrackUris: planningOptions.topTrackUris,
+    exposureMultipliers: planningOptions.exposureMultipliers,
     familiarUris: new Set(familiarUris),
     referenceTracks,
     discoveryHistory,
     settings,
     count,
     absoluteStartPosition: position,
+    rngSeed: planningOptions.rngSeed,
+    explorationBand: planningOptions.explorationBand,
+    explorationTemperature: planningOptions.explorationTemperature,
   })
 }
 
@@ -66,7 +104,8 @@ export const buildSinglePoolBatch = (
   sessionPlayedUris: string[],
   settings: SmartConfig,
   count: number,
-  absoluteStartPosition = 0
+  absoluteStartPosition = 0,
+  planningOptions: BatchPlanningOptions = {}
 ): TrackCandidate[] => {
   const playedSet = new Set(sessionPlayedUris)
   let eligiblePool = filterPlayableCandidates(pool).filter((track) => !playedSet.has(track.uri))
@@ -91,11 +130,20 @@ export const buildSinglePoolBatch = (
       },
     ],
     excludedUris: [...playedSet],
-    queueTailUris: sessionPlayedUris,
+    excludedCanonicalKeys: planningOptions.excludedCanonicalKeys,
+    queueTailUris: planningOptions.queueTailUris ?? sessionPlayedUris,
+    recentHistoryUris: planningOptions.recentHistoryUris,
+    habitualArtistKeys: planningOptions.habitualArtistKeys,
+    recentArtistKeys: planningOptions.recentArtistKeys,
+    topTrackUris: planningOptions.topTrackUris,
+    exposureMultipliers: planningOptions.exposureMultipliers,
     familiarUris: new Set(sessionPlayedUris),
     settings,
     count,
     absoluteStartPosition,
+    rngSeed: planningOptions.rngSeed,
+    explorationBand: planningOptions.explorationBand,
+    explorationTemperature: planningOptions.explorationTemperature,
   })
 }
 
@@ -113,7 +161,8 @@ export const buildPlaylistBatch = (
   count: number,
   absoluteStartPosition = 0,
   mode: "playlist" | "album" = "playlist",
-  discoveryHistory: readonly boolean[] = []
+  discoveryHistory: readonly boolean[] = [],
+  planningOptions: BatchPlanningOptions = {}
 ): TrackCandidate[] => {
   const playlistUris = new Set(playlistTracks.map((track) => track.uri))
   const playedUris = new Set(sessionPlayedUris)
@@ -144,12 +193,20 @@ export const buildPlaylistBatch = (
     ],
     referenceTracks: playlistTracks,
     excludedUris: [...playlistUris, ...excludedHistory],
-    queueTailUris: sessionPlayedUris,
-    topTrackUris: new Set(topTrackUris),
+    excludedCanonicalKeys: planningOptions.excludedCanonicalKeys,
+    queueTailUris: planningOptions.queueTailUris ?? sessionPlayedUris,
+    recentHistoryUris: planningOptions.recentHistoryUris,
+    habitualArtistKeys: planningOptions.habitualArtistKeys,
+    recentArtistKeys: planningOptions.recentArtistKeys,
+    exposureMultipliers: planningOptions.exposureMultipliers,
+    topTrackUris: new Set([...topTrackUris, ...(planningOptions.topTrackUris ?? [])]),
     familiarUris: new Set([...playlistUris, ...topTrackUris, ...sessionPlayedUris]),
     discoveryHistory,
     settings: { ...settings, deprioritizePopular: true },
     count,
     absoluteStartPosition,
+    rngSeed: planningOptions.rngSeed,
+    explorationBand: planningOptions.explorationBand,
+    explorationTemperature: planningOptions.explorationTemperature,
   })
 }

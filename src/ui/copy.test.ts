@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest"
-import { COPY, savedPlaylistMessage } from "./copy"
+import {
+  COPY,
+  savedPlayedPlaylistMessage,
+  savedPlaylistMessage,
+  savePlayedPlaylistTooltip,
+  timelineSeedLabel,
+  timelineSeedTooltip,
+} from "./copy"
 
 describe("Similar Mix copy", () => {
   it("gives every action a distinct, non-empty name", () => {
@@ -14,6 +21,23 @@ describe("Similar Mix copy", () => {
     }
     expect(savedPlaylistMessage("Song", 25)).toBe(
       'Saved "Similar to - Song" with 25 tracks. Playing now.'
+    )
+    expect(savedPlayedPlaylistMessage("Song", 1)).toBe(
+      'Saved "Similar to - Song" with 1 played song.'
+    )
+    expect(savedPlayedPlaylistMessage("Song", 8)).toBe(
+      'Saved "Similar to - Song" with 8 played songs.'
+    )
+  })
+
+  it("formats the timeline seed label and played-queue playlist tooltip", () => {
+    expect(timelineSeedLabel("Ribs")).toBe("Playing similar songs based on Ribs")
+    expect(timelineSeedTooltip("Ribs", "Lorde")).toBe(
+      'Playing similar songs based on "Ribs" by Lorde'
+    )
+    expect(savePlayedPlaylistTooltip(1)).toBe("Save playlist with 1 song played from this queue")
+    expect(savePlayedPlaylistTooltip(5)).toBe(
+      "Save playlist with all 5 songs played from this queue"
     )
   })
 

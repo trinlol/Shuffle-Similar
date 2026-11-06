@@ -5,6 +5,7 @@ export type TrackCandidate = {
   albumUri?: string
   albumName?: string
   trackName?: string
+  genres?: string[]
   popularity?: number
   releaseYear?: number
   instrumentalness?: number

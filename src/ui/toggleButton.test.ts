@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 import { createSimilarMixStatus } from "./status"
-import { getToggleButtonPresentation } from "./toggleButton"
+import { getTimelineBannerPresentation, getToggleButtonPresentation } from "./toggleButton"
 
 describe("Similar Mix toggle presentation", () => {
   it("keeps building truthful: busy but not pressed before queue success", () => {
@@ -49,6 +49,75 @@ describe("Similar Mix toggle presentation", () => {
       pressed: false,
       busy: false,
       label: "Retry Similar Mix",
+    })
+  })
+})
+
+describe("Similar Mix timeline banner presentation", () => {
+  it("stays hidden when no Similar Mix session is active", () => {
+    expect(
+      getTimelineBannerPresentation({
+        sessionActive: false,
+        seed: { trackName: "July", artistName: "Noah Cyrus" },
+        playedCount: 3,
+      })
+    ).toMatchObject({
+      visible: false,
+      seedTitle: "",
+      fullText: "",
+      playedCount: 0,
+      buttonDisabled: true,
+    })
+  })
+
+  it("shows the original seed song and played track count when Similar Mix is active", () => {
+    expect(
+      getTimelineBannerPresentation({
+        sessionActive: true,
+        seed: { trackName: "July", artistName: "Noah Cyrus" },
+        playedCount: 6,
+      })
+    ).toEqual({
+      visible: true,
+      prefixText: "Playing similar songs based on ",
+      seedTitle: "July",
+      fullText: "Playing similar songs based on July",
+      tooltip: 'Playing similar songs based on "July" by Noah Cyrus',
+      playedCount: 6,
+      buttonLabel: "Save playlist",
+      buttonTooltip: "Save playlist with all 6 songs played from this queue",
+      buttonBusy: false,
+      buttonDisabled: false,
+      buttonState: "idle",
+    })
+  })
+
+  it("reflects saving and saved states on the timeline playlist button", () => {
+    const saving = getTimelineBannerPresentation({
+      sessionActive: true,
+      seed: { trackName: "July", artistName: "Noah Cyrus" },
+      playedCount: 4,
+      saveState: "saving",
+    })
+    expect(saving).toMatchObject({
+      buttonLabel: "Saving…",
+      buttonBusy: true,
+      buttonDisabled: true,
+      buttonState: "saving",
+    })
+
+    const saved = getTimelineBannerPresentation({
+      sessionActive: true,
+      seed: { trackName: "July", artistName: "Noah Cyrus" },
+      playedCount: 4,
+      saveState: "saved",
+    })
+    expect(saved).toMatchObject({
+      buttonLabel: "Saved!",
+      buttonTooltip: 'Saved "Similar to - July" with 4 played songs.',
+      buttonBusy: false,
+      buttonDisabled: false,
+      buttonState: "saved",
     })
   })
 })

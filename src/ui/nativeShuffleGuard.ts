@@ -5,7 +5,7 @@ import {
   NATIVE_SHUFFLE_SELECTORS,
 } from "./playbarControls"
 
-let hookedButton: HTMLButtonElement | null = null
+let hookedButtonRef: WeakRef<HTMLButtonElement> | null = null
 let shuffleClickBlocker: ((event: Event) => void) | null = null
 
 export const NATIVE_SHUFFLE_BLOCKED_TITLE = "Turn off Similar Mix to use Spotify shuffle"
@@ -135,10 +135,11 @@ export const updateNativeShuffleGuard = () => {
   const blocked = sessionManager.isToggleEnabled()
   enforceNativeShuffleOff()
 
+  const hookedButton = hookedButtonRef?.deref() ?? null
   const button = findNativeShuffleButton()
   if (!button) {
     if (hookedButton) applyNativeShuffleBlockedState(hookedButton, false)
-    hookedButton = null
+    hookedButtonRef = null
     return
   }
 
@@ -146,8 +147,8 @@ export const updateNativeShuffleGuard = () => {
     applyNativeShuffleBlockedState(hookedButton, false)
   }
 
-  hookedButton = button
   applyNativeShuffleBlockedState(button, blocked)
+  hookedButtonRef = blocked ? new WeakRef(button) : null
 }
 
 export const registerNativeShuffleGuard = () => {

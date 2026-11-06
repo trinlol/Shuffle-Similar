@@ -487,18 +487,33 @@ export const createTasteProfileStore = (
   storage: TasteProfileStorage = createSpicetifyLocalStorageAdapter(),
   storageKey = TASTE_PROFILE_STORAGE_KEY
 ): TasteProfileStore => {
+  let cachedRead: { raw: string; profile: TasteProfileState } | null = null
+
   const read = (now: number): DecodeResult => {
     let raw: string | null = null
     try {
       raw = storage.get(storageKey)
     } catch {
+      cachedRead = null
       return { profile: createEmptyTasteProfile(now), status: "missing" }
     }
-    return decodeProfile(raw, now)
+    if (!raw) {
+      cachedRead = null
+      return { profile: createEmptyTasteProfile(now), status: "missing" }
+    }
+    if (cachedRead && cachedRead.raw === raw) {
+      return { profile: cachedRead.profile, status: "current" }
+    }
+    const decoded = decodeProfile(raw, now)
+    if (decoded.status === "current") {
+      cachedRead = { raw, profile: decoded.profile }
+    }
+    return decoded
   }
 
   const repairIfNeeded = (decoded: DecodeResult): void => {
     if (decoded.status === "malformed") {
+      cachedRead = null
       try {
         storage.remove(storageKey)
       } catch {
@@ -506,7 +521,9 @@ export const createTasteProfileStore = (
       }
     } else if (decoded.status === "migrated") {
       try {
-        storage.set(storageKey, JSON.stringify(decoded.profile))
+        const serialized = JSON.stringify(decoded.profile)
+        storage.set(storageKey, serialized)
+        cachedRead = { raw: serialized, profile: decoded.profile }
       } catch {
         // The migrated in-memory profile is still safe to use for this session.
       }
@@ -528,7 +545,9 @@ export const createTasteProfileStore = (
 
       const updated = recordPlaybackOutcome(decoded.profile, outcome)
       try {
-        storage.set(storageKey, JSON.stringify(updated))
+        const serialized = JSON.stringify(updated)
+        storage.set(storageKey, serialized)
+        cachedRead = { raw: serialized, profile: updated }
       } catch {
         // Learning is best-effort and local storage failure must not interrupt playback.
       }
@@ -542,13 +561,16 @@ export const createTasteProfileStore = (
 
       const updated = recordExplicitTasteFeedback(decoded.profile, feedback)
       try {
-        storage.set(storageKey, JSON.stringify(updated))
+        const serialized = JSON.stringify(updated)
+        storage.set(storageKey, serialized)
+        cachedRead = { raw: serialized, profile: updated }
       } catch {
         // Explicit feedback remains best-effort and never interrupts playback.
       }
       return updated
     },
     clear: () => {
+      cachedRead = null
       try {
         storage.remove(storageKey)
       } catch {
@@ -608,16 +630,18 @@ const normalizedAcousticValue = (key: keyof AcousticProfile, value: number): num
   key === "tempo" ? clamp((value - 50) / 150, 0, 1) : clamp(value, 0, 1)
 
 const acousticDistance = (left: AcousticProfile, right: AcousticProfile): number | null => {
-  const squaredDeltas: number[] = []
+  let sum = 0
+  let count = 0
   for (const key of ACOUSTIC_KEYS) {
     const leftValue = left[key]
     const rightValue = right[key]
     if (leftValue === undefined || rightValue === undefined) continue
     const delta = normalizedAcousticValue(key, leftValue) - normalizedAcousticValue(key, rightValue)
-    squaredDeltas.push(delta * delta)
+    sum += delta * delta
+    count += 1
   }
-  if (squaredDeltas.length < 2) return null
-  return Math.sqrt(squaredDeltas.reduce((sum, delta) => sum + delta, 0) / squaredDeltas.length)
+  if (count < 2) return null
+  return Math.sqrt(sum / count)
 }
 
 const acousticAffinity = (
@@ -645,6 +669,66 @@ const acousticAffinity = (
   return clamp((signed / total) * reliability, -1, 1)
 }
 
+type IndexedTasteProfile = {
+  tracksLen: number
+  artistsLen: number
+  genresLen: number
+  negativeTracksByKey: Map<string, CategoricalTasteSignal[]>
+  artistsByKey: Map<string, CategoricalTasteSignal[]>
+  genresByKey: Map<string, CategoricalTasteSignal[]>
+  lastNow: number | null
+  lastConfidence: TasteProfileConfidence | null
+}
+
+const tasteProfileIndexCache = new WeakMap<TasteProfileState, IndexedTasteProfile>()
+
+const getIndexedTasteProfile = (profile: TasteProfileState): IndexedTasteProfile => {
+  const existing = tasteProfileIndexCache.get(profile)
+  if (
+    existing &&
+    existing.tracksLen === profile.signals.tracks.length &&
+    existing.artistsLen === profile.signals.artists.length &&
+    existing.genresLen === profile.signals.genres.length
+  ) {
+    return existing
+  }
+
+  const negativeTracksByKey = new Map<string, CategoricalTasteSignal[]>()
+  for (const signal of profile.signals.tracks) {
+    if (signal.sentiment >= 0) continue
+    const bucket = negativeTracksByKey.get(signal.key)
+    if (bucket) bucket.push(signal)
+    else negativeTracksByKey.set(signal.key, [signal])
+  }
+
+  const artistsByKey = new Map<string, CategoricalTasteSignal[]>()
+  for (const signal of profile.signals.artists) {
+    const bucket = artistsByKey.get(signal.key)
+    if (bucket) bucket.push(signal)
+    else artistsByKey.set(signal.key, [signal])
+  }
+
+  const genresByKey = new Map<string, CategoricalTasteSignal[]>()
+  for (const signal of profile.signals.genres) {
+    const bucket = genresByKey.get(signal.key)
+    if (bucket) bucket.push(signal)
+    else genresByKey.set(signal.key, [signal])
+  }
+
+  const indexed: IndexedTasteProfile = {
+    tracksLen: profile.signals.tracks.length,
+    artistsLen: profile.signals.artists.length,
+    genresLen: profile.signals.genres.length,
+    negativeTracksByKey,
+    artistsByKey,
+    genresByKey,
+    lastNow: null,
+    lastConfidence: null,
+  }
+  tasteProfileIndexCache.set(profile, indexed)
+  return indexed
+}
+
 /**
  * Returns a deterministic recommendation weight multiplier. Cold profiles are
  * neutral (1); mature profiles stay within 0.5..1.75 so learning can guide,
@@ -655,52 +739,88 @@ export const scoreTasteAffinity = (
   profile: TasteProfileState,
   context: TasteScoringContext
 ): number => {
-  const confidence = getTasteProfileConfidence(profile, context.now)
+  const indexed = getIndexedTasteProfile(profile)
+  const confidence =
+    indexed.lastNow === context.now && indexed.lastConfidence
+      ? indexed.lastConfidence
+      : getTasteProfileConfidence(profile, context.now)
+  indexed.lastNow = context.now
+  indexed.lastConfidence = confidence
   if (!confidence.ready) return 1
 
   const components: Array<{ affinity: number | null; contextual: number | null; weight: number }> =
     []
   const track = cleanKey(candidate.uri)
+  const negativeTrackSignals = track ? (indexed.negativeTracksByKey.get(track) ?? []) : []
+  const trackSet = track ? new Set([track]) : null
   components.push({
-    affinity: track
-      ? categoricalAffinity(new Set([track]), profile.signals.tracks, context.now)
-      : null,
+    affinity:
+      trackSet && negativeTrackSignals.length > 0
+        ? categoricalAffinity(trackSet, negativeTrackSignals, context.now)
+        : null,
     contextual:
-      track && context.contextKey
-        ? categoricalAffinity(
-            new Set([track]),
-            profile.signals.tracks,
-            context.now,
-            context.contextKey
-          )
+      trackSet && negativeTrackSignals.length > 0 && context.contextKey
+        ? categoricalAffinity(trackSet, negativeTrackSignals, context.now, context.contextKey)
         : null,
     weight: 0.45,
   })
 
   const artist = artistKey(candidate)
+  const artistSignals = artist ? (indexed.artistsByKey.get(artist) ?? []) : []
+  const artistSet = artist ? new Set([artist]) : null
+  let artistAffinity =
+    artistSet && artistSignals.length > 0
+      ? categoricalAffinity(artistSet, artistSignals, context.now)
+      : null
+  let artistContextual =
+    artistSet && artistSignals.length > 0 && context.contextKey
+      ? categoricalAffinity(artistSet, artistSignals, context.now, context.contextKey)
+      : null
+
+  let artistWeight = 0.3
+  if (artistAffinity !== null) {
+    if (artistAffinity > 0) {
+      artistWeight = 0.16
+      let positiveArtistCount = 0
+      for (const signal of artistSignals) {
+        if (signal.sentiment > 0 && Math.max(0, context.now - signal.occurredAt) <= 14 * DAY_MS) {
+          positiveArtistCount += 1
+        }
+      }
+      if (positiveArtistCount > 4) {
+        const damping = Math.exp(-0.3 * (positiveArtistCount - 4))
+        artistAffinity *= damping
+        if (artistContextual !== null && artistContextual > 0) {
+          artistContextual *= damping
+        }
+      }
+    } else if (artistAffinity < 0) {
+      artistWeight = 0.42
+    }
+  }
+
   components.push({
-    affinity: artist
-      ? categoricalAffinity(new Set([artist]), profile.signals.artists, context.now)
-      : null,
-    contextual:
-      artist && context.contextKey
-        ? categoricalAffinity(
-            new Set([artist]),
-            profile.signals.artists,
-            context.now,
-            context.contextKey
-          )
-        : null,
-    weight: 0.3,
+    affinity: artistAffinity,
+    contextual: artistContextual,
+    weight: artistWeight,
   })
 
-  const genres = new Set(normalizeGenres(context.genres))
+  const genres = new Set(
+    normalizeGenres(context.genres?.length ? context.genres : candidate.genres)
+  )
+  const matchedGenreSignals: CategoricalTasteSignal[] = []
+  for (const genre of genres) {
+    const bucket = indexed.genresByKey.get(genre)
+    if (bucket) matchedGenreSignals.push(...bucket)
+  }
   components.push({
     affinity:
-      genres.size > 0 ? categoricalAffinity(genres, profile.signals.genres, context.now) : null,
+      matchedGenreSignals.length > 0
+        ? categoricalAffinity(genres, matchedGenreSignals, context.now)
+        : null,
     contextual:
-      genres.size > 0 && context.contextKey
-        ? categoricalAffinity(genres, profile.signals.genres, context.now, context.contextKey)
+      matchedGenreSignals.length > 0 && context.contextKey
+        ? categoricalAffinity(genres, matchedGenreSignals, context.now, context.contextKey)
         : null,
     weight: 0.2,
   })
@@ -750,5 +870,28 @@ export const scoreTasteAffinity = (
   // Context can refine a mature global profile but never overpower it.
   const learnedAffinity =
     contextualAffinity == null ? globalAffinity : globalAffinity * 0.7 + contextualAffinity * 0.3
-  return clamp(Math.exp(0.75 * confidence.confidence * learnedAffinity), 0.5, 1.75)
+  return clamp(Math.exp(0.68 * confidence.confidence * learnedAffinity), 0.45, 1.28)
+}
+
+export const scoreArtistHabitualPenalty = (
+  candidate: Pick<TrackCandidate, "artistUri" | "artistName">,
+  profile: TasteProfileState | undefined,
+  now = Date.now()
+): number => {
+  if (!profile) return 1.0
+  const key = artistKey(candidate)
+  if (!key) return 1.0
+
+  const halfLifeMs = 14 * DAY_MS
+  let decayedPositiveCount = 0
+  for (const signal of profile.signals.artists) {
+    if (signal.key === key && signal.sentiment > 0) {
+      const elapsed = Math.max(0, now - signal.occurredAt)
+      const signalWeight = typeof signal.strength === "number" ? signal.strength : 1
+      decayedPositiveCount += signalWeight * 0.5 ** (elapsed / halfLifeMs)
+    }
+  }
+
+  if (decayedPositiveCount <= 3.5) return 1.0
+  return clamp(Math.exp(-0.35 * (decayedPositiveCount - 3.5)), 0.35, 1.0)
 }

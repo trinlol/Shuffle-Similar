@@ -1,8 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { createSimilarPlaylist } from "./playlistService"
+import { sessionManager } from "../session/SessionManager"
+import {
+  createSimilarPlaylist,
+  getSessionPlayedTrackUris,
+  savePlayedSessionPlaylist,
+} from "./playlistService"
 
 describe("createSimilarPlaylist", () => {
   afterEach(() => {
+    sessionManager.endSession()
     vi.unstubAllGlobals()
   })
 
@@ -50,6 +56,71 @@ describe("createSimilarPlaylist", () => {
     expect(result).toEqual({
       uri: "spotify:playlist:new-playlist",
       trackCount: 2,
+    })
+  })
+
+  it("saves a playlist with every song played from the active Similar Mix queue in order", async () => {
+    const rootlistApi = {
+      createPlaylist: vi.fn().mockResolvedValue("spotify:playlist:played-queue"),
+    }
+    const playlistApi = {
+      add: vi.fn().mockResolvedValue(undefined),
+    }
+    vi.stubGlobal("Spicetify", {
+      Player: {
+        data: {
+          item: { uri: "spotify:track:played-3" },
+        },
+      },
+      Platform: {
+        RootlistAPI: rootlistApi,
+        PlaylistAPI: playlistApi,
+      },
+    })
+
+    sessionManager.startSession({
+      uri: "spotify:track:seed-song",
+      trackId: "seed-song",
+      trackName: "Original Song",
+      artistName: "Original Artist",
+      artistUri: "spotify:artist:orig",
+      genres: ["indie pop"],
+    })
+    sessionManager.setQueuedUris([
+      "spotify:track:played-1",
+      "spotify:track:played-2",
+      "spotify:track:played-3",
+      "spotify:track:unplayed-4",
+    ])
+    sessionManager.recordTrackPlayed("spotify:track:played-1")
+    sessionManager.recordTrackPlayed("spotify:track:played-2")
+
+    expect(getSessionPlayedTrackUris()).toEqual([
+      "spotify:track:seed-song",
+      "spotify:track:played-1",
+      "spotify:track:played-2",
+      "spotify:track:played-3",
+    ])
+
+    const saved = await savePlayedSessionPlaylist()
+
+    expect(rootlistApi.createPlaylist).toHaveBeenCalledWith("Similar to - Original Song", {
+      before: "start",
+    })
+    expect(playlistApi.add).toHaveBeenCalledWith(
+      "spotify:playlist:played-queue",
+      [
+        "spotify:track:seed-song",
+        "spotify:track:played-1",
+        "spotify:track:played-2",
+        "spotify:track:played-3",
+      ],
+      { before: "start" }
+    )
+    expect(saved).toEqual({
+      uri: "spotify:playlist:played-queue",
+      trackCount: 4,
+      seedTrackName: "Original Song",
     })
   })
 })

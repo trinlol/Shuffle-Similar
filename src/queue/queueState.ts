@@ -8,6 +8,13 @@
 
 export type QueueEntry = { uri: string; provider: string | null }
 
+export type PreviousQueueTrack = {
+  uri: string
+  trackName?: string
+  artistUri?: string
+  artistName?: string
+}
+
 export type QueueSnapshot = {
   entries: QueueEntry[]
   revision: string | null
@@ -42,10 +49,10 @@ const toEntries = (tracks: unknown): QueueEntry[] =>
 
 /** The slice of the Spicetify runtime this module reads, all of it optional. */
 type QueueRuntime = {
-  Queue?: { nextTracks?: unknown; queueRevision?: unknown }
+  Queue?: { nextTracks?: unknown; prevTracks?: unknown; queueRevision?: unknown }
   Platform?: {
     PlayerAPI?: {
-      _queue?: { _queueState?: { queued?: unknown; nextUp?: unknown } }
+      _queue?: { _queueState?: { queued?: unknown; nextUp?: unknown; previous?: unknown } }
       _events?: QueueEvents
     }
   }
@@ -103,6 +110,69 @@ export const queuedUris = (snapshot: QueueSnapshot = readQueueSnapshot()): strin
     snapshot.entries.filter((entry) => entry.provider === "queue").map((entry) => entry.uri)
   ),
 ]
+
+const toPreviousTrack = (track: unknown): PreviousQueueTrack | null => {
+  if (typeof track !== "object" || track === null) return null
+  const record = track as {
+    uri?: unknown
+    name?: unknown
+    artists?: Array<{ uri?: unknown; name?: unknown }>
+    metadata?: Record<string, unknown>
+    contextTrack?: { uri?: unknown; metadata?: Record<string, unknown> }
+  }
+  const uri = record.uri ?? record.contextTrack?.uri
+  if (typeof uri !== "string" || !uri.startsWith("spotify:track:")) return null
+  const meta = record.metadata ?? record.contextTrack?.metadata
+  const trackName =
+    typeof record.name === "string" && record.name
+      ? record.name
+      : typeof meta?.title === "string" && meta.title
+        ? meta.title
+        : undefined
+  const artistUri =
+    typeof record.artists?.[0]?.uri === "string" && record.artists[0].uri
+      ? record.artists[0].uri
+      : typeof meta?.artist_uri === "string" && meta.artist_uri
+        ? meta.artist_uri
+        : undefined
+  const artistName =
+    typeof record.artists?.[0]?.name === "string" && record.artists[0].name
+      ? record.artists[0].name
+      : typeof meta?.artist_name === "string" && meta.artist_name
+        ? meta.artist_name
+        : undefined
+  return { uri, trackName, artistUri, artistName }
+}
+
+/**
+ * Previously played queue tracks exposed by Spotify's desktop queue state,
+ * ordered most-recent-first. Never throws.
+ */
+export const readPreviousQueueTracks = (): PreviousQueueTrack[] => {
+  try {
+    const spicetify = runtime()
+    if (!spicetify) return []
+    const collect = (items: unknown): PreviousQueueTrack[] =>
+      Array.isArray(items)
+        ? items
+            .map(toPreviousTrack)
+            .filter((entry): entry is PreviousQueueTrack => entry !== null)
+            .reverse()
+        : []
+    const publicPrev = collect(spicetify.Queue?.prevTracks)
+    const internalPrev = collect(spicetify.Platform?.PlayerAPI?._queue?._queueState?.previous)
+    const seen = new Set<string>()
+    const merged: PreviousQueueTrack[] = []
+    for (const entry of [...publicPrev, ...internalPrev]) {
+      if (seen.has(entry.uri)) continue
+      seen.add(entry.uri)
+      merged.push(entry)
+    }
+    return merged
+  } catch {
+    return []
+  }
+}
 
 const queueEvents = (): QueueEvents | null => {
   try {

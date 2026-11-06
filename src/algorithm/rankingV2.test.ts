@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest"
 import {
   type BlendFamily,
   canonicalizeTrackTitle,
+  normalizeTempoV2,
   planSlateV2,
   type RankableCandidate,
   rankCandidatesV2,
@@ -21,6 +22,16 @@ const familyCandidates = (family: BlendFamily, count: number): RankableCandidate
     albumUri: `spotify:album:${family}-${index}`,
     provenance: [{ source: `${family}-source`, family, rank: 1 }],
   }))
+
+describe("normalizeTempoV2", () => {
+  it("normalizes tempo using min-max scaling clipped between 0.0 and 1.0", () => {
+    expect(normalizeTempoV2(50)).toBe(0)
+    expect(normalizeTempoV2(125)).toBe(0.5)
+    expect(normalizeTempoV2(200)).toBe(1)
+    expect(normalizeTempoV2(240)).toBe(1)
+    expect(normalizeTempoV2(20)).toBe(0)
+  })
+})
 
 describe("canonicalizeTrackTitle", () => {
   const bare = canonicalizeTrackTitle("Song")
@@ -180,6 +191,59 @@ describe("rankCandidatesV2", () => {
     expect(neighborAfter.score).toBeLessThan(neighborBefore.score)
     expect(neighborAfter.score).toBeGreaterThan(0)
     expect(neighborAfter.reasonCodes).toContain("rank:skip-penalized")
+  })
+
+  it("enforces 90% artist penalty and 75% acoustic neighborhood skip penalty", () => {
+    const candidates: RankableCandidate[] = [
+      {
+        uri: "spotify:track:same-artist-different-sound",
+        title: "Same Artist Different Sound",
+        artistUris: ["spotify:artist:skip-artist"],
+        acoustic: { tempo: 180, energy: 0.2, valence: 0.1 },
+        provenance: [{ source: "radio", family: "similar", rank: 1 }],
+      },
+      {
+        uri: "spotify:track:different-artist-same-sound",
+        title: "Different Artist Same Sound",
+        artistUris: ["spotify:artist:other-artist"],
+        acoustic: { tempo: 121, energy: 0.71, valence: 0.59 },
+        provenance: [{ source: "radio", family: "similar", rank: 1 }],
+      },
+      {
+        uri: "spotify:track:unrelated-artist-and-sound",
+        title: "Unrelated",
+        artistUris: ["spotify:artist:unrelated"],
+        acoustic: { tempo: 190, energy: 0.2, valence: 0.1 },
+        provenance: [{ source: "radio", family: "similar", rank: 1 }],
+      },
+    ]
+
+    const ranked = rankCandidatesV2(candidates, {
+      skipSignals: [
+        {
+          artistUris: ["spotify:artist:skip-artist"],
+          acoustic: { tempo: 120, energy: 0.7, valence: 0.6 },
+          confidence: 1,
+        },
+      ],
+    })
+
+    const byUri = new Map(ranked.map((c) => [c.uri, c]))
+    const artistSkipped = mustGet(byUri, "spotify:track:same-artist-different-sound")
+    const acousticSkipped = mustGet(byUri, "spotify:track:different-artist-same-sound")
+    const unrelated = mustGet(byUri, "spotify:track:unrelated-artist-and-sound")
+
+    // 90% artist penalty: 1 - 0.9 = 0.1
+    expect(artistSkipped.breakdown.values.feedback).toBeCloseTo(0.1)
+    expect(artistSkipped.reasonCodes).toContain("rank:skip-penalized")
+
+    // 75% acoustic penalty: 1 - 0.75 = 0.25
+    expect(acousticSkipped.breakdown.values.feedback).toBeCloseTo(0.25)
+    expect(acousticSkipped.reasonCodes).toContain("rank:skip-penalized")
+
+    // Unrelated has full feedback affinity (1.0 = no penalty)
+    expect(unrelated.breakdown.values.feedback).toBe(1)
+    expect(unrelated.reasonCodes).not.toContain("rank:skip-penalized")
   })
 })
 
@@ -361,5 +425,82 @@ describe("planSlateV2", () => {
       "relax:album-spacing",
       "relax:artist-spacing",
     ])
+  })
+
+  it("enforces post-position-20 rolling artist cap preventing an artist from repeating >2 times in 25 tracks or >2 times across a 40-track slate", () => {
+    const repeatingArtistUri = "spotify:artist:repeat-heavy"
+    const candidates: RankableCandidate[] = [
+      ...Array.from({ length: 6 }, (_, index) => ({
+        uri: `spotify:track:repeat-${index}`,
+        title: `Repeat Heavy ${index}`,
+        artistUris: [repeatingArtistUri],
+        albumUri: `spotify:album:repeat-${index}`,
+        provenance: [{ source: "radio", family: "similar" as const, rank: 1 }],
+        signals: { contextAffinity: 0.99 },
+      })),
+      ...Array.from({ length: 50 }, (_, artist) => ({
+        uri: `spotify:track:tail-${artist}`,
+        title: `Tail Artist ${artist}`,
+        artistUris: [`spotify:artist:tail-${artist}`],
+        albumUri: `spotify:album:tail-${artist}`,
+        provenance: [{ source: "radio", family: "similar" as const, rank: 2 }],
+        signals: { contextAffinity: 0.8 },
+      })),
+    ]
+
+    const ranked = rankCandidatesV2(candidates)
+    const plan = planSlateV2(ranked, {
+      count: 40,
+      absoluteStartPosition: 0,
+      rngSeed: "rolling-artist-cap",
+    })
+
+    const allItems = plan.items
+    const repeatPositions = allItems
+      .map((item, index) => ({ index, artists: item.candidate.artistUris }))
+      .filter((entry) => entry.artists?.includes(repeatingArtistUri))
+      .map((entry) => entry.index)
+
+    // In a 40-track slate, the repeating artist must never appear > 2 times across the slate
+    expect(repeatPositions.length).toBeLessThanOrEqual(2)
+
+    // Test position >= 20 starting offset specifically with 2 prior occurrences in queueTail:
+    const queueTailWithTwoRepeats: RankableCandidate[] = [
+      {
+        uri: "spotify:track:tail-repeat-1",
+        title: "Tail Repeat 1",
+        artistUris: [repeatingArtistUri],
+        albumUri: "spotify:album:tail-1",
+        provenance: [],
+      },
+      ...Array.from({ length: 10 }, (_, i) => ({
+        uri: `spotify:track:tail-spacer-${i}`,
+        title: `Spacer ${i}`,
+        artistUris: [`spotify:artist:spacer-${i}`],
+        albumUri: `spotify:album:spacer-${i}`,
+        provenance: [],
+      })),
+      {
+        uri: "spotify:track:tail-repeat-2",
+        title: "Tail Repeat 2",
+        artistUris: [repeatingArtistUri],
+        albumUri: "spotify:album:tail-2",
+        provenance: [],
+      },
+    ]
+
+    const post20Plan = planSlateV2(ranked, {
+      count: 10,
+      absoluteStartPosition: 20,
+      queueTail: queueTailWithTwoRepeats,
+      rngSeed: "post-20-rolling-cap",
+    })
+
+    const post20RepeatTracks = post20Plan.items.filter((item) =>
+      item.candidate.artistUris?.includes(repeatingArtistUri)
+    )
+    // Because repeatingArtist already appeared 2 times in the last 25 tracks,
+    // and ample alternative artists exist, the rolling cap prevents a 3rd selection:
+    expect(post20RepeatTracks.length).toBe(0)
   })
 })

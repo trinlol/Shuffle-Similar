@@ -49,16 +49,25 @@ export const mergeCandidatesWithProvenance = (
     }
 
     const definedValues = Object.fromEntries(
-      Object.entries(candidate).filter(
-        ([key, value]) => key !== "sourceProvenance" && value !== undefined && value !== null
-      )
+      Object.entries(candidate).filter(([key, value]) => {
+        if (key === "sourceProvenance" || key === "genres") return false
+        return value !== undefined && value !== null
+      })
     ) as Partial<TrackCandidate>
+    const mergedGenres = [
+      ...new Set(
+        [...(existing.genres ?? []), ...(candidate.genres ?? [])]
+          .filter((genre): genre is string => typeof genre === "string" && genre.trim().length > 0)
+          .map((genre) => genre.trim())
+      ),
+    ]
     const provenance = [...getSourceProvenance(existing), ...getSourceProvenance(candidate)].filter(
       (source, index, all) => all.indexOf(source) === index
     )
     merged.set(candidate.uri, {
       ...existing,
       ...definedValues,
+      ...(mergedGenres.length > 0 ? { genres: mergedGenres } : {}),
       uri: candidate.uri,
       sourceProvenance: provenance.slice(-MAX_PROVENANCE_ENTRIES),
     })

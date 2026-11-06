@@ -8,6 +8,7 @@ import {
   MAX_PROFILE_SIGNALS,
   recordExplicitTasteFeedback,
   recordPlaybackOutcome,
+  scoreArtistHabitualPenalty,
   scoreTasteAffinity,
   TASTE_PROFILE_SCHEMA_VERSION,
   TASTE_PROFILE_STORAGE_KEY,
@@ -274,5 +275,59 @@ describe("taste affinity scoring", () => {
     })
 
     expect(night).toBeLessThan(morning)
+  })
+
+  it("damps positive artist affinity when overplayed with > 4 signals within 14 days", () => {
+    let profile = createEmptyTasteProfile(NOW)
+    for (let index = 0; index < 8; index += 1) {
+      profile = recordPlaybackOutcome(profile, {
+        type: "completion",
+        candidate: candidate(`heavy-${index}`, "heavy-artist"),
+        genres: ["indie pop"],
+        occurredAt: NOW - index * DAY,
+      })
+    }
+
+    const testCandidate = candidate("heavy-test", "heavy-artist")
+    const affinity = scoreTasteAffinity(testCandidate, profile, {
+      genres: ["indie pop"],
+      now: NOW,
+    })
+    expect(affinity).toBeGreaterThan(1.0)
+    expect(affinity).toBeLessThanOrEqual(1.28)
+  })
+
+  it("computes habitual artist penalties once an artist is overplayed and decays towards 1.0", () => {
+    let profile = createEmptyTasteProfile(NOW)
+    const artistCandidate = candidate("artist-test", "habitual-artist")
+
+    // Unheard artist -> 1.0
+    expect(scoreArtistHabitualPenalty(artistCandidate, profile, NOW)).toBe(1.0)
+
+    // 1-2 plays -> normal liked artist (decayedPositiveCount <= 3.5) -> 1.0
+    profile = recordPlaybackOutcome(profile, {
+      type: "completion",
+      candidate: artistCandidate,
+      genres: ["indie pop"],
+      occurredAt: NOW,
+    })
+    expect(scoreArtistHabitualPenalty(artistCandidate, profile, NOW)).toBe(1.0)
+
+    // 5 completions -> habitual artist (decayedPositiveCount > 3.5) -> penalty applied
+    for (let index = 1; index < 5; index += 1) {
+      profile = recordPlaybackOutcome(profile, {
+        type: "completion",
+        candidate: candidate(`artist-test-${index}`, "habitual-artist"),
+        genres: ["indie pop"],
+        occurredAt: NOW - index * 60_000,
+      })
+    }
+    const penalty1 = scoreArtistHabitualPenalty(artistCandidate, profile, NOW)
+    expect(penalty1).toBeLessThan(1.0)
+    expect(penalty1).toBeGreaterThanOrEqual(0.35)
+
+    // Stale after 70 days -> decays to <= 3.5 -> returns 1.0
+    const stalePenalty = scoreArtistHabitualPenalty(artistCandidate, profile, NOW + 70 * DAY)
+    expect(stalePenalty).toBe(1.0)
   })
 })

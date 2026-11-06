@@ -7,7 +7,7 @@ import {
   getRecentKeys,
   pickFromPool,
 } from "../algorithm/filters"
-import { getBlendWeights } from "../algorithm/progressiveBlend"
+import { buildTrackBatch, getBlendWeights } from "../algorithm/progressiveBlend"
 import {
   acousticDistanceV2,
   canonicalTrackKey,
@@ -18,15 +18,22 @@ import {
 } from "../algorithm/rankingV2"
 import type { SeedMetadata, TrackCandidate } from "../session/types"
 import { SourcePipeline } from "../sources/sourcePipeline"
+import {
+  clearExposureLedger,
+  computeExposureMultipliers,
+  recordBatchExposure,
+} from "../storage/exposureLedger"
 import { getSmartConfig } from "../storage/settings"
+
+const storageMap = new Map<string, string>()
 
 beforeAll(() => {
   ;(globalThis as unknown as { Spicetify: unknown }).Spicetify = {
     LocalStorage: {
-      get: () => null,
-      set: () => undefined,
-      remove: () => undefined,
-      clear: () => undefined,
+      get: (key: string) => storageMap.get(key) ?? null,
+      set: (key: string, value: string) => storageMap.set(key, value),
+      remove: (key: string) => storageMap.delete(key),
+      clear: () => storageMap.clear(),
     },
   }
 })
@@ -449,5 +456,104 @@ describe("Better Shuffle 2.0 independent recommendation gate", () => {
 
     expect(output).toContain("spotify:track:intro-one")
     expect(output).toContain("spotify:track:intro-two")
+  })
+
+  it("prevents echo chambers across consecutive sessions on the same seed via exposure tracking and exploration", () => {
+    storageMap.clear()
+    clearExposureLedger()
+
+    // 80 tracks across 40 distinct artists (2 tracks per artist)
+    const poolSize = 80
+    const candidatePool: TrackCandidate[] = Array.from({ length: poolSize }, (_, i) => {
+      const artistIndex = Math.floor(i / 2)
+      return {
+        uri: `spotify:track:pool-${i}`,
+        trackName: `Pool Song ${i}`,
+        artistUri: `spotify:artist:pool-artist-${artistIndex}`,
+        artistName: `Pool Artist ${artistIndex}`,
+        albumUri: `spotify:album:pool-${artistIndex}`,
+        genres: ["indie pop", "singer-songwriter"],
+        popularity: 50 + (i % 30),
+        tempo: 115 + (i % 10) * 2,
+        energy: 0.5 + (i % 5) * 0.05,
+        valence: 0.45 + (i % 4) * 0.05,
+        danceability: 0.55,
+      }
+    })
+
+    const seedTrack: SeedMetadata = {
+      uri: "spotify:track:session-seed",
+      trackId: "session-seed",
+      trackName: "Seed Track",
+      artistName: "Seed Artist",
+      artistUri: "spotify:artist:seed",
+      genres: ["indie pop"],
+      popularity: 70,
+    }
+
+    const sessionDurationMs = 3_600_000 // 1 hour between sessions
+    let currentTime = 1_700_000_000_000
+    const sessionSlates: TrackCandidate[][] = []
+    const allPlayedUris: string[] = []
+
+    for (let sessionIndex = 0; sessionIndex < 3; sessionIndex += 1) {
+      const exposureMultipliers = computeExposureMultipliers(candidatePool, currentTime)
+      const previousSessionTracks = sessionSlates[sessionIndex - 1] ?? []
+      const habitualKeys = new Set(
+        previousSessionTracks.map((t) => t.artistUri).filter((uri): uri is string => Boolean(uri))
+      )
+
+      const slate = buildTrackBatch(
+        seedTrack,
+        0,
+        [],
+        candidatePool,
+        [],
+        getSmartConfig(seedTrack),
+        15,
+        allPlayedUris,
+        [],
+        [],
+        {
+          rngSeed: `anti-echo-session-${sessionIndex}`,
+          explorationBand: 0.045,
+          explorationTemperature: 0.02,
+          recentHistoryUris: allPlayedUris.slice(-30),
+          recentArtistKeys: previousSessionTracks.slice(-5).map((t) => t.artistUri ?? ""),
+          habitualArtistKeys: habitualKeys,
+          exposureMultipliers,
+        }
+      )
+
+      expect(slate).toHaveLength(15)
+      sessionSlates.push(slate)
+
+      // Record exposure for all selected tracks as "played"
+      recordBatchExposure(slate, "played", currentTime)
+      for (const track of slate) {
+        allPlayedUris.push(track.uri)
+      }
+
+      currentTime += sessionDurationMs
+    }
+
+    const session1Uris = new Set(sessionSlates[0].map((t) => t.uri))
+    const session2Uris = new Set(sessionSlates[1].map((t) => t.uri))
+    const session3Uris = new Set(sessionSlates[2].map((t) => t.uri))
+
+    // Between consecutive sessions (1 and 2), over 85% of tracks are completely new:
+    const session1And2Overlap = [...session2Uris].filter((uri) => session1Uris.has(uri))
+    expect(session1And2Overlap.length).toBeLessThanOrEqual(2)
+
+    // Across all 3 sessions (45 total track slots), high unique track and artist diversity:
+    const totalSelectedUris = new Set([...session1Uris, ...session2Uris, ...session3Uris])
+    const totalSelectedArtists = new Set(
+      sessionSlates.flatMap((slate) => slate.map((t) => t.artistUri))
+    )
+
+    // At least 38 out of 45 slots (>84%) must be unique tracks:
+    expect(totalSelectedUris.size).toBeGreaterThanOrEqual(38)
+    // At least 25 distinct artists must be discovered across the 3 sessions:
+    expect(totalSelectedArtists.size).toBeGreaterThanOrEqual(25)
   })
 })

@@ -1,3 +1,4 @@
+import { fisherYatesShuffle } from "../algorithm/shuffle"
 import type { TrackCandidate } from "../session/types"
 import { getMarket } from "../utils/playability"
 import { getUriId } from "../utils/uri"
@@ -12,6 +13,7 @@ const ALBUM_CONCURRENCY = 3
 type AlbumTrackItem = {
   track?: {
     uri?: string
+    name?: string
     playability?: { playable?: boolean }
     artists?: { items?: Array<{ uri?: string; profile?: { name?: string } }> }
     popularity?: number
@@ -51,6 +53,7 @@ export const fetchAlbumTracks = async (albumUri: string): Promise<TrackCandidate
         return attachSourceProvenance(
           {
             uri: track.uri,
+            trackName: track.name,
             artistUri: track.artists?.items?.[0]?.uri,
             artistName: track.artists?.items?.[0]?.profile?.name,
             albumUri,
@@ -105,13 +108,21 @@ export const fetchArtistDiscographyTracks = async (
     const albums = (res?.items ?? []) as Array<{ id?: string; uri?: string }>
     if (albums.length === 0) return []
 
-    const albumUris = [
+    const uniqueAlbumUris = [
       ...new Set(
         albums
           .map((album) => album.uri ?? (album.id ? `spotify:album:${album.id}` : ""))
           .filter(Boolean)
       ),
-    ].slice(0, MAX_DISCOGRAPHY_ALBUMS)
+    ]
+    const albumUris =
+      uniqueAlbumUris.length <= 2
+        ? uniqueAlbumUris.slice(0, MAX_DISCOGRAPHY_ALBUMS)
+        : [...uniqueAlbumUris.slice(0, 2), ...fisherYatesShuffle(uniqueAlbumUris.slice(2))].slice(
+            0,
+            MAX_DISCOGRAPHY_ALBUMS
+          )
+
     const albumTracks = await mapWithConcurrency(albumUris, ALBUM_CONCURRENCY, (albumUri) =>
       fetchAlbumTracks(albumUri)
     )
