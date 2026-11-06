@@ -1,12 +1,16 @@
-# Shuffle Similar 2.1
+# Shuffle Similar 2.2
 
 Shuffle Similar builds a coherent **Similar Mix** around the track, album, artist, or playlist you choose. It combines several Spotify discovery paths with your own listening context, spaces repeats, paces musical transitions, and quietly adapts when you skip. There are no preference forms or tuning panels to maintain.
 
-## What 2.1 does
+## What 2.2 does
 
 - Fuses ranked candidates from radio, inspired-by, search, related-artist, era, playlist, and library sources instead of trusting one endpoint
+- Keeps mixes in the seed's sonic pocket with structural genre-phrase affinity, live artist-graph co-occurrence, 6D acoustic outlier gating, and automatic vocal/soundtrack filtering
+- Tracks exponentially decayed cross-session exposure and canonical song identity so repeated sessions stay fresh without replaying alternate uploads of the same song
 - Plans the queue as a complete slate: canonical duplicate removal, artist and album spacing, source coverage, progressive library blending, and acoustic transition pacing
-- Learns from clear playback outcomes such as completion, substantial listening, and genuine early skips; pauses, seeks, errors, and leaving the mix do not poison the profile
+- Learns from clear playback outcomes such as completion, substantial listening, and genuine early skips; pauses, seeks, manual **Add to queue** detours, errors, and leaving the mix do not poison the profile
+- Scraps the upcoming Similar Mix queue cleanly when you click an unrelated song, while preserving the active mix across manual **Add to queue** detours
+- Shows the active seed beside Spotify's timeline with a one-click **Save playlist** button for the songs played in the current session
 - Saves a bounded, decaying taste profile locally in Spicetify storage; it is not uploaded as extension telemetry
 - Re-ranks what comes next immediately after an early skip
 - Clears and verifies the previous Spotify queue before a new Similar Mix takes ownership

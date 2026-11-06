@@ -4,21 +4,28 @@ All notable changes to Shuffle Similar are documented in this file.
 
 ## [Unreleased]
 
-### Fixed
-
-- Stops rebuilding the queue (and showing "Added to queue") on every song change after Spotify silently drops one of the mix's tracks. Only a track placed in front of the mix's own tracks now counts as foreign
-- The Similar Mix playbar button now appears when the playing playlist's name contains "Similar", "Smart" or "Better", such as playlists saved by Shuffle Similar itself
-- A refill that was waiting its turn can no longer overwrite a mix started in the meantime
-- Waiting for Spotify's queue now follows its `queue_update` event instead of fixed sleeps, and a fallback that crashed before Spotify's queue loaded is fixed
+## [2.2.0] - 2026-11-06
 
 ### Added
 
+- **Genre, graph, and acoustic coherence filtering**: Structural genre-phrase matching, live artist-graph tag expansion, 6D acoustic outlier gating, and vocal/soundtrack/novelty filtering keep mixes anchored to the seed song's vibe without leaking movie scores, instrumentals, or unrelated genres
+- **Cross-session exposure decay & canonical repeat protection**: Exponentially decayed exposure tracking (`played`, `completed`, `queued`, `early-skip`) plus canonical title and artist history keep repeated mixes around the same seed or artist fresh
+- **Playbar seed banner & one-click Save playlist**: Displays the active seed song beside the playback timeline with a **Save playlist** action that saves every song played during the current Similar Mix session
+- **Clean queue lifecycle on manual clicks & detours**: Clicking a song outside the active Similar Mix scraps the old mix queue cleanly, **Add to queue** plays manual detour songs without ending or poisoning the active mix, and starting **Similar Mix** on a different track clears the previous mix queue first
 - **Copy Similar Mix diagnostics** in the context menu: a short log of recent queue operations (no tracks or account details) to paste into bug reports
-- Error messages end with a short reference code, for example "(ref: queue_not_confirmed)"
+- Error messages end with a short reference code, for example `(ref: queue_not_confirmed)`
 
 ### Changed
 
 - The context-menu action that saves a mix as a playlist is now called **Save Similar Mix as Playlist** (was "Create Similar Playlist"), so it can't be confused with **Start Similar Mix**
+
+### Fixed
+
+- Stops rebuilding the queue (and showing "Added to queue") on every song change after Spotify silently drops one of the mix's tracks. Only a non-manual track placed in front of the mix's own tracks now counts as foreign
+- The Similar Mix playbar button now appears when the playing playlist's name contains "Similar", "Smart" or "Better", such as playlists saved by Shuffle Similar itself
+- A refill that was waiting its turn can no longer overwrite a mix started in the meantime
+- Waiting for Spotify's queue now follows its `queue_update` event instead of fixed sleeps, and a fallback that crashed before Spotify's queue loaded is fixed
+- Plugged memory leaks across playbar remounts and multi-hour sessions: destroys detached `Tippy` tooltips, reuses the timeline banner element, tracks DOM and event-emitter references with `WeakRef`, cancels replaced debounce timers, and bounds active-session registries and caches
 
 ## [2.1.3] - 2026-10-31
 
